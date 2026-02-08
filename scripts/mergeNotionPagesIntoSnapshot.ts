@@ -2,6 +2,32 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs";
 
+type AnalyzerNotionPage = {
+  notion_id?: string;
+  url?: string | null;
+  title?: string | null;
+  filename?: string | null;
+  creator?: string | null;
+  created_time?: string | null;
+  last_edited_time?: string | null;
+  [k: string]: unknown;
+};
+
+function normalizeAnalyzerPages(raw: any): AnalyzerNotionPage[] {
+  if (!raw) return [];
+
+  const pagesRaw = raw.pages ?? raw.Pages ?? raw.notion_pages ?? null;
+
+  // formato: { pages: [ ... ] }
+  if (Array.isArray(pagesRaw)) return pagesRaw as AnalyzerNotionPage[];
+
+  // formato atual: { pages: { "<id>": {..}, ... } }
+  if (pagesRaw && typeof pagesRaw === "object") {
+    return Object.values(pagesRaw) as AnalyzerNotionPage[];
+  }
+
+  return [];
+}
 
 type NotionPage = {
   notion_id: string;
@@ -89,12 +115,23 @@ function main() {
       canonical_log: []
     };
 
-  const exportData = loadJson<AnalyzerNotionExport>(exportPath);
+  // ✅ Lê o export como "raw" e normaliza o schema (map ou array)
+  const exportRaw = loadJson<any>(exportPath);
+  const pagesArr = normalizeAnalyzerPages(exportRaw);
 
-  if (!exportData || !exportData.pages) {
+  if (pagesArr.length === 0) {
     console.error("No analyzer_notionsync.json or missing pages.");
     process.exit(1);
   }
+
+  // ✅ Reconstrói no formato canônico que o merge já espera: Record<id, page>
+  const exportData: AnalyzerNotionExport = {
+    pages: Object.fromEntries(
+      pagesArr
+        .filter((p) => typeof p.notion_id === "string" && p.notion_id.length > 0)
+        .map((p) => [p.notion_id as string, p as NotionPage])
+    )
+  };
 
   const merged = mergePagesIntoSnapshot(snapshot, exportData, "skip");
   saveJson(snapshotPath, merged);
@@ -109,9 +146,5 @@ function isEntryPoint(): boolean {
 }
 
 if (isEntryPoint()) {
-  // se main() for async, use void main()
-  // se for sync, main()
-  // Vou assumir async por segurança:
-  void main();
+  main();
 }
-

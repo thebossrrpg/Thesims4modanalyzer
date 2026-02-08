@@ -1,7 +1,6 @@
 import ogs from "open-graph-scraper";
 import fs from "node:fs";
 import path from "node:path";
-import readline from "node:readline";
 import type { Identity, UnfurlVia } from "../domain/identity.js";
 
 const REQUEST_HEADERS: Record<string, string> = {
@@ -22,19 +21,18 @@ type UnfurlMeta = {
   via: UnfurlVia;
 };
 
-type ProviderKey = "ogWebApi" | "localOgs" | "iframely";
+type ProviderKey = "ogWebApi" | "localOgs";
 type ProviderState = { blockedUntilMs: number };
 
 const providerState: Record<ProviderKey, ProviderState> = {
   ogWebApi: { blockedUntilMs: 0 },
-  localOgs: { blockedUntilMs: 0 },
-  iframely: { blockedUntilMs: 0 }
+  localOgs: { blockedUntilMs: 0 }
 };
 
 type CacheEntry = { expiresAtMs: number; meta: UnfurlMeta };
 const unfurlCache = new Map<string, CacheEntry>();
 
-// ===== Iframely usage persistence =====
+// ===== Iframely usage persistence (apenas leitura para sugestão) =====
 
 type IframelyUsage = {
   month: string; // YYYY-MM
@@ -44,6 +42,15 @@ type IframelyUsage = {
 
 const CACHE_DIR = path.resolve(process.cwd(), ".cache");
 const IFRAMELY_USAGE_FILE = path.join(CACHE_DIR, "iframely-usage.json");
+const NOTIONCACHE_FILE = path.join(CACHE_DIR, "notioncache.json");
+
+// ===== Debug helper =====
+
+function debugLog(msg: string): void {
+  if (process.env.UNFURL_DEBUG === "1") {
+    console.error(msg);
+  }
+}
 
 function ensureCacheDir(): void {
   try {
@@ -76,15 +83,6 @@ function readIframelyUsage(): IframelyUsage {
     };
   } catch {
     return { month, hits: 0 };
-  }
-}
-
-function writeIframelyUsage(usage: IframelyUsage): void {
-  ensureCacheDir();
-  try {
-    fs.writeFileSync(IFRAMELY_USAGE_FILE, JSON.stringify(usage, null, 2), "utf-8");
-  } catch {
-    // ignore
   }
 }
 
@@ -157,6 +155,7 @@ async function fetchHtml(url: string): Promise<string> {
   const timeout = setTimeout(() => controller.abort(), 25000);
 
   try {
+    debugLog(`[unfurl] fetchHtml start url=${url}`);
     const res = await fetch(url, {
       method: "GET",
       headers: REQUEST_HEADERS,
@@ -165,8 +164,12 @@ async function fetchHtml(url: string): Promise<string> {
     });
 
     const text = await res.text();
+    debugLog(
+      `[unfurl] fetchHtml done url=${url} status=${res.status} length=${text.length}`
+    );
     return text || "";
-  } catch {
+  } catch (err) {
+    debugLog(`[unfurl] fetchHtml error url=${url} err=${String(err)}`);
     return "";
   } finally {
     clearTimeout(timeout);
@@ -196,14 +199,94 @@ function setCachedUnfurl(url: string, meta: UnfurlMeta, ttlMs: number): void {
   unfurlCache.set(url, { meta, expiresAtMs: nowMs() + ttlMs });
 }
 
+// ===== Notioncache pré-fase 1 =====
+
+type NotionPage = {
+  notion_id: string;
+  created_time?: string;
+  last_edited_time?: string;
+  filename?: string | null;
+  url?: string | null;
+  creator?: string | null;
+};
+
+type NotionCache = {
+  pages?: Record<string, NotionPage>;
+};
+
+let notionCacheLoaded = false;
+let notionCache: NotionCache | null = null;
+
+function loadNotionCache(): void {
+  if (notionCacheLoaded) return;
+  notionCacheLoaded = true;
+  try {
+    ensureCacheDir();
+    const raw = fs.readFileSync(NOTIONCACHE_FILE, "utf-8");
+    const data = JSON.parse(raw) as NotionCache;
+    if (!data || typeof data !== "object") {
+      debugLog("[unfurl] notioncache invalid structure");
+      notionCache = null;
+      return;
+    }
+    notionCache = data;
+    debugLog("[unfurl] notioncache loaded");
+  } catch (err) {
+    debugLog(`[unfurl] notioncache load failed err=${String(err)}`);
+    notionCache = null;
+  }
+}
+
+function tryNotionIdentity(url: string): Identity | null {
+  loadNotionCache();
+  if (!notionCache || !notionCache.pages) {
+    debugLog("[unfurl] notion_direct skipped (no pages)");
+    return null;
+  }
+
+  const pages = Object.values(notionCache.pages);
+  const match = pages.find((p) => p.url && p.url === url);
+  if (!match || !match.url) {
+    debugLog("[unfurl] notion_direct no-match");
+    return null;
+  }
+
+  const parsed = new URL(match.url);
+  const domain = parsed.hostname.replace(/^www\./, "");
+  const urlSlug = buildSlugFromPath(parsed.pathname);
+  const title = (match.filename ?? "").trim() || null;
+
+  debugLog(
+    `[unfurl] notion_direct match notion_id=${match.notion_id} filename=${match.filename ?? ""}`
+  );
+
+  const identity: Identity = {
+    url: match.url,
+    domain,
+    urlSlug: urlSlug || "—",
+    pageTitle: title,
+    ogTitle: title,
+    ogSite: "NotionCache",
+    isBlocked: false,
+    unfurlVia: "notion_direct",
+    fallbackLabel: `${domain} · ${urlSlug || "—"}`
+  };
+
+  return identity;
+}
+
 // ===== Providers =====
 
 // 1) FREE: og-web-scraper-api.vercel.app
 async function tryOgWebApi(url: string): Promise<UnfurlMeta | null> {
-  const endpoint = `https://og-web-scraper-api.vercel.app/scrape?url=${encodeURIComponent(url)}`;
+  debugLog(`[unfurl] tryOgWebApi url=${url}`);
+  const endpoint = `https://og-web-scraper-api.vercel.app/scrape?url=${encodeURIComponent(
+    url
+  )}`;
   const res = await fetch(endpoint, { method: "GET" });
 
   if (!res.ok) {
+    debugLog(`[unfurl] ogWebApi http=${res.status}`);
     if (res.status === 429) throw new Error("OGWEB_RATE_LIMIT");
     if (res.status === 403) throw new Error("OGWEB_FORBIDDEN");
     return null;
@@ -223,21 +306,29 @@ async function tryOgWebApi(url: string): Promise<UnfurlMeta | null> {
     null;
 
   const meta = normalizeMeta({ title, ogTitle: title, ogSite }, "og_web_scraper");
-  if (!isUsefulMeta(meta)) return null;
+  if (!isUsefulMeta(meta)) {
+    debugLog("[unfurl] ogWebApi useless-meta");
+    return null;
+  }
+  debugLog("[unfurl] ogWebApi success");
   return meta;
 }
 
 // 2) FREE: open-graph-scraper local
 async function tryLocalOgs(url: string): Promise<UnfurlMeta | null> {
+  debugLog(`[unfurl] tryLocalOgs url=${url}`);
   const result = await ogs({
     url,
     timeout: 8000,
     onlyGetOpenGraphInfo: true,
-    fetchOptions: { headers: REQUEST_HEADERS } // <- importante
+    fetchOptions: { headers: REQUEST_HEADERS }
   });
 
   const r: any = result?.result ?? null;
-  if (!r) return null;
+  if (!r) {
+    debugLog("[unfurl] localOgs no-result");
+    return null;
+  }
 
   const meta = normalizeMeta(
     {
@@ -248,106 +339,25 @@ async function tryLocalOgs(url: string): Promise<UnfurlMeta | null> {
     "local_ogs"
   );
 
-  if (!isUsefulMeta(meta)) return null;
-  return meta;
-}
-
-async function askUser(question: string): Promise<"hit" | "skip" | "cooldown"> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const prompt = `${question}\nResponda: hit | skip | cooldown\n> `;
-
-  const answer: string = await new Promise((resolve) => rl.question(prompt, resolve));
-  rl.close();
-
-  const a = answer.trim().toLowerCase();
-  if (a === "hit" || a === "skip" || a === "cooldown") return a;
-  return "skip";
-}
-
-// 3) LIMITED: Iframely (interactive guard)
-async function tryIframelyWithGuard(url: string): Promise<UnfurlMeta | null> {
-  const policyRaw = (process.env.IFRAMELY_POLICY || "").trim().toLowerCase();
-  const policy =
-    policyRaw === "hit" || policyRaw === "skip" || policyRaw === "cooldown"
-      ? (policyRaw as "hit" | "skip" | "cooldown")
-      : null;
-
-  const apiKey = process.env.IFRAMELY_API_KEY;
-  if (!apiKey) return null;
-
-  const usage = readIframelyUsage();
-
-  if (usage.cooldownUntilMs && nowMs() < usage.cooldownUntilMs) {
+  if (!isUsefulMeta(meta)) {
+    debugLog("[unfurl] localOgs useless-meta");
     return null;
   }
-
-  const softLimit = getIframelySoftLimit();
-
-  if (usage.hits >= softLimit) {
-    let answer: "hit" | "skip" | "cooldown";
-
-    if (policy) {
-      answer = policy;
-    } else if (!process.stdin.isTTY) {
-      answer = "skip";
-    } else {
-      answer = await askUser(
-        `Iframely já usou ${usage.hits} hits neste mês (soft limit: ${softLimit}). Deseja aplicar a API ou pular essa etapa?`
-      );
-    }
-
-    if (answer === "skip") return null;
-
-    if (answer === "cooldown") {
-      usage.cooldownUntilMs = nowMs() + 30 * 60_000; // 30 minutos
-      writeIframelyUsage(usage);
-      return null;
-    }
-  }
-
-  const endpoint =
-    "https://iframe.ly/api/iframely?url=" +
-    encodeURIComponent(url) +
-    "&api_key=" +
-    encodeURIComponent(apiKey);
-
-  const res = await fetch(endpoint, { method: "GET" });
-
-  if (!res.ok) {
-    if (res.status === 429) {
-      usage.cooldownUntilMs = nowMs() + 60 * 60_000;
-      writeIframelyUsage(usage);
-      throw new Error("IFRAMELY_RATE_LIMIT");
-    }
-    if (res.status === 403) {
-      usage.cooldownUntilMs = nowMs() + 60 * 60_000;
-      writeIframelyUsage(usage);
-      throw new Error("IFRAMELY_FORBIDDEN");
-    }
-    return null;
-  }
-
-  const data: any = await res.json();
-
-  const title = typeof data?.meta?.title === "string" ? data.meta.title : null;
-  const site = typeof data?.meta?.site === "string" ? data.meta.site : null;
-
-  const meta = normalizeMeta({ title, ogTitle: title, ogSite: site }, "iframely");
-  if (!isUsefulMeta(meta)) return null;
-
-  usage.hits += 1;
-  writeIframelyUsage(usage);
-
+  debugLog("[unfurl] localOgs success");
   return meta;
 }
 
 async function unfurlBlocked(url: string): Promise<UnfurlMeta | null> {
   const cached = getCachedUnfurl(url);
-  if (cached) return cached;
+  if (cached) {
+    debugLog(`[unfurl] cache hit via=${cached.via} url=${url}`);
+    return cached;
+  }
 
   const GOOD_TTL = 6 * 60 * 60_000;
 
   if (canTry("ogWebApi")) {
+    debugLog("[unfurl] provider=ogWebApi eligible");
     try {
       const meta = await tryOgWebApi(url);
       if (meta) {
@@ -357,11 +367,15 @@ async function unfurlBlocked(url: string): Promise<UnfurlMeta | null> {
       cooldown("ogWebApi", 5 * 60_000);
     } catch (e: any) {
       const msg = String(e?.message ?? "");
+      debugLog(`[unfurl] ogWebApi error msg=${msg}`);
       cooldown("ogWebApi", msg.includes("RATE_LIMIT") ? 30 * 60_000 : 10 * 60_000);
     }
+  } else {
+    debugLog("[unfurl] provider=ogWebApi on-cooldown");
   }
 
   if (canTry("localOgs")) {
+    debugLog("[unfurl] provider=localOgs eligible");
     try {
       const meta = await tryLocalOgs(url);
       if (meta) {
@@ -369,29 +383,28 @@ async function unfurlBlocked(url: string): Promise<UnfurlMeta | null> {
         return meta;
       }
       cooldown("localOgs", 2 * 60_000);
-    } catch {
+    } catch (e: any) {
+      debugLog(`[unfurl] localOgs error msg=${String(e)}`);
       cooldown("localOgs", 2 * 60_000);
     }
+  } else {
+    debugLog("[unfurl] provider=localOgs on-cooldown");
   }
 
-  if (canTry("iframely")) {
-    try {
-      const meta = await tryIframelyWithGuard(url);
-      if (meta) {
-        setCachedUnfurl(url, meta, GOOD_TTL);
-        return meta;
-      }
-      cooldown("iframely", 10 * 60_000);
-    } catch (e: any) {
-      const msg = String(e?.message ?? "");
-      cooldown("iframely", msg.includes("RATE_LIMIT") ? 60 * 60_000 : 15 * 60_000);
-    }
-  }
-
+  debugLog("[unfurl] all providers exhausted, returning null");
   return null;
 }
 
 export async function analyzeUrl(url: string): Promise<Identity> {
+  debugLog(`[unfurl] analyzeUrl start url=${url}`);
+
+  // Pré-fase 1: tentar resolver diretamente via notioncache (match exato da URL)
+  const notionIdentity = tryNotionIdentity(url);
+  if (notionIdentity) {
+    debugLog("[unfurl] resolved via notion_direct (pre-phase1)");
+    return notionIdentity;
+  }
+
   const parsed = new URL(url);
   const domain = parsed.hostname.replace(/^www\./, "");
   const urlSlug = buildSlugFromPath(parsed.pathname);
@@ -401,6 +414,10 @@ export async function analyzeUrl(url: string): Promise<Identity> {
   const ogTitle = extractMetaContent(html, "og:title");
   const ogSite = extractMetaContent(html, "og:site_name");
   const isBlocked = detectBlocked(html.toLowerCase(), pageTitle?.toLowerCase() ?? null);
+
+  debugLog(
+    `[unfurl] initial html parsed isBlocked=${isBlocked} pageTitle=${pageTitle ?? ""}`
+  );
 
   let identity: Identity = {
     url,
@@ -415,6 +432,7 @@ export async function analyzeUrl(url: string): Promise<Identity> {
   };
 
   if (isBlocked) {
+    debugLog("[unfurl] html detected blocked, entering unfurlBlocked()");
     const meta = await unfurlBlocked(url);
 
     if (meta) {
@@ -425,14 +443,45 @@ export async function analyzeUrl(url: string): Promise<Identity> {
         ogSite: meta.ogSite || identity.ogSite,
         unfurlVia: meta.via
       };
+      debugLog(`[unfurl] blocked resolved via=${meta.via}`);
     } else {
       identity = { ...identity, unfurlVia: "fallback" };
+      debugLog("[unfurl] blocked unresolved, using fallback");
     }
+  } else {
+    debugLog("[unfurl] html not blocked, skipping unfurlBlocked()");
   }
 
-if (identity.isBlocked && identity.pageTitle && BLOCKED_PATTERNS.test(identity.pageTitle)) {
-  identity.pageTitle = null;
-}
+  if (
+    identity.isBlocked &&
+    identity.pageTitle &&
+    BLOCKED_PATTERNS.test(identity.pageTitle)
+  ) {
+    debugLog("[unfurl] pageTitle matched BLOCKED_PATTERNS, clearing pageTitle");
+    identity.pageTitle = null;
+  }
+
+  // ===== Sugestão de Iframely para UX (não chama a API aqui) =====
+
+  const usage = readIframelyUsage();
+  const softLimit = getIframelySoftLimit();
+
+  const shouldSuggestIframely =
+    usage.hits >= softLimit &&
+    identity.isBlocked &&
+    !identity.pageTitle &&
+    !identity.ogTitle;
+
+  if (shouldSuggestIframely) {
+    (identity as any).iframelySuggestion = "hit";
+    debugLog(
+      `[unfurl] iframelySuggestion=hit hits=${usage.hits} softLimit=${softLimit} url=${url}`
+    );
+  }
+
+  debugLog(
+    `[unfurl] analyzeUrl done via=${identity.unfurlVia} title=${identity.pageTitle ?? identity.ogTitle ?? ""}`
+  );
 
   return identity;
 }

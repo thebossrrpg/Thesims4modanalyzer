@@ -5,9 +5,9 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/main.js",
-    "merge:notion": "ts-node --transpile-only --compiler-options '{\"module\":\"CommonJS\",\"moduleResolution\":\"Node\"}' scripts/mergeNotionPagesIntoSnapshot.ts"
-  },
-  "dependencies": {
+    "merge:notion": "node -r ts-node/register/transpile-only scripts/mergeNotionPagesIntoSnapshot.ts snapshot.json analyzer_notionsync.json"
+},
+"dependencies": {
     "cheerio": "^1.0.0-rc.12",
     "open-graph-scraper": "^6.11.0"
   },

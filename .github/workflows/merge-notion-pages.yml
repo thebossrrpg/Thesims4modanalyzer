@@ -27,6 +27,10 @@ jobs:
           path: .
           search_artifacts: true
 
+      - name: Unzip analyzer_notionsync artifact
+        run: |
+          unzip -o analyzer_notionsync.zip -d analyzer_notionsync
+          ls -R analyzer_notionsync
 
       - name: Merge Notion pages into snapshot
         run: |

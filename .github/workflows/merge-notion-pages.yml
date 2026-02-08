@@ -23,9 +23,9 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           repo: thebossrpg/notion-ticktick-automation
+          run_id: 21801900123
           name: analyzer_notionsync
           path: .
-          search_artifacts: true
 
       - name: Unzip analyzer_notionsync artifact
         run: |

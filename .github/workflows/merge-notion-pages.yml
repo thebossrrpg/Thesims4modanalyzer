@@ -21,11 +21,12 @@ jobs:
       - name: Download analyzer_notionsync artifact
         uses: dawidd6/action-download-artifact@v2
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
           repo: thebossrpg/notion-ticktick-automation
-          run_id: 21801900123
           name: analyzer_notionsync
           path: .
+          search_artifacts: true
+
 
       - name: Unzip analyzer_notionsync artifact
         run: |

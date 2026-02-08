@@ -34,9 +34,14 @@ jobs:
         run: ls -R
 
 
+      - name: Install deps
+        run: |
+          npm install
+
       - name: Merge Notion pages into snapshot
         run: |
-          node scripts/mergeNotionPagesIntoSnapshot.js snapshot.json analyzer_notionsync.json
+          npx ts-node scripts/mergeNotionPagesIntoSnapshot.ts snapshot.json analyzer_notionsync.json
+
 
       - name: Commit and push updated snapshot
         env:

@@ -40,7 +40,8 @@ jobs:
 
       - name: Merge Notion pages into snapshot
         run: |
-          node dist/scripts/mergeNotionPagesIntoSnapshot.js snapshot.json analyzer_notionsync.json
+          node dist/mergeNotionPagesIntoSnapshot.js snapshot.json analyzer_notionsync.json
+
 
 
 

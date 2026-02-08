@@ -21,10 +21,11 @@ jobs:
       - name: Download analyzer_notionsync artifact
         uses: dawidd6/action-download-artifact@v2
         with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           repo: thebossrpg/notion-ticktick-automation
           name: analyzer_notionsync
           path: .
-          branch: feat/analyzer-notion-export
+          search_artifacts: true
 
       - name: Merge Notion pages into snapshot
         run: |

@@ -34,13 +34,15 @@ jobs:
         run: |
           npm install
           npm run build
-
-      - name: List downloaded files
-        run: ls -R
+          echo "=== TREE DIST ==="
+          ls -R dist || echo "sem dist"
+          echo "=== TREE ROOT ==="
+          ls -R
 
       - name: Merge Notion pages into snapshot
         run: |
           node dist/mergeNotionPagesIntoSnapshot.js snapshot.json analyzer_notionsync.json
+
 
 
 

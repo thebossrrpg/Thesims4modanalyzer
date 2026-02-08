@@ -38,7 +38,6 @@ jobs:
         run: |
           npm run merge:notion -- snapshot.json analyzer_notionsync.json
 
-
       - name: Commit and push updated snapshot
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,5 +1,7 @@
-import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
+import fs from "node:fs";
+
 
 type NotionPage = {
   notion_id: string;
@@ -98,6 +100,18 @@ function main() {
   saveJson(snapshotPath, merged);
 }
 
-if (require.main === module) {
-  main();
+const __filename = fileURLToPath(import.meta.url);
+
+function isEntryPoint(): boolean {
+  const entry = process.argv[1]; // caminho do script passado ao node
+  if (!entry) return false;
+  return path.resolve(entry) === path.resolve(__filename);
 }
+
+if (isEntryPoint()) {
+  // se main() for async, use void main()
+  // se for sync, main()
+  // Vou assumir async por segurança:
+  void main();
+}
+

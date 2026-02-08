@@ -1,0 +1,54 @@
+name: Pull analyzer_notionsync.json
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pull-notionsync
+  cancel-in-progress: true
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm ci
+
+      - name: Fetch notionsync
+        env:
+          ANALYZER_NOTIONSYNC_URL: ${{ secrets.ANALYZER_NOTIONSYNC_URL }}
+        run: |
+          if [ -z "$ANALYZER_NOTIONSYNC_URL" ]; then
+            echo "Missing secret ANALYZER_NOTIONSYNC_URL"
+            exit 1
+          fi
+          npm run pull:notionsync
+
+      - name: Validate JSON
+        run: |
+          node -e "JSON.parse(require('fs').readFileSync('analyzer_notionsync.json','utf8')); console.log('JSON OK');"
+
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet -- analyzer_notionsync.json; then
+            echo "No changes."
+            exit 0
+          fi
+
+          git add analyzer_notionsync.json
+          git commit -m "chore: update analyzer_notionsync.json"
+          git push

@@ -28,11 +28,10 @@ jobs:
       - name: Download analyzer_notionsync artifact
         uses: dawidd6/action-download-artifact@v2
         with:
-          repo: thebossrpg/notion-ticktick-automation
-          workflow: Sync Notion Priority to TickTick
-          workflow_conclusion: success
-          name: analyzer_notionsync
-          path: .
+        repo: thebossrpg/notion-ticktick-automation
+        name: analyzer_notionsync
+        path: .
+        branch: feat/analyzer-notion-export
 
       - name: Merge Notion pages into snapshot
         run: |

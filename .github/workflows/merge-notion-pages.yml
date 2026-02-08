@@ -18,12 +18,14 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Install deps (se precisar compilar TS)
+      # Instala deps e compila TS -> JS (gera dist/)
+      - name: Install deps and build
         run: |
           npm install
-          npm run build || echo "no build step"
+          npm run build
 
-      - name: Fetch analyzer_notionsync.json artifact
+      # Baixa o artifact gerado no repo notion-ticktick-automation
+      - name: Download analyzer_notionsync artifact
         uses: dawidd6/action-download-artifact@v2
         with:
           repo: thebossrpg/notion-ticktick-automation

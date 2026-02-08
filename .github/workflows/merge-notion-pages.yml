@@ -34,14 +34,10 @@ jobs:
         run: |
           npm install
 
-      - name: List project files
-        run: |
-          echo "=== ROOT ==="
-          ls -R
-
       - name: Merge Notion pages into snapshot
         run: |
-          npx ts-node --compiler-options '{"module":"CommonJS","moduleResolution":"Node"}' scripts/mergeNotionPagesIntoSnapshot.ts snapshot.json analyzer_notionsync.json
+          npm run merge:notion -- snapshot.json analyzer_notionsync.json
+
 
       - name: Commit and push updated snapshot
         env:

@@ -1,2 +1,3 @@
-# Thesims4modanalyzer
-Mais uma tentativa, dessa vez em JS. 
+# TS4 Mod Analyzer
+
+Reinício do projeto — ambiente funcionando.

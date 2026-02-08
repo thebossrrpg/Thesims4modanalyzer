@@ -27,6 +27,7 @@ jobs:
           path: .
           search_artifacts: true
 
+
       - name: Merge Notion pages into snapshot
         run: |
           node scripts/mergeNotionPagesIntoSnapshot.js snapshot.json analyzer_notionsync.json

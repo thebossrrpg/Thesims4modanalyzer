@@ -18,24 +18,17 @@ jobs:
         with:
           node-version: "20"
 
-      # Instala deps e compila TS -> JS (gera dist/)
-      - name: Install deps and build
-        run: |
-          npm install
-          npm run build
-
-      # Baixa o artifact gerado no repo notion-ticktick-automation
       - name: Download analyzer_notionsync artifact
         uses: dawidd6/action-download-artifact@v2
-      with:
-        repo: thebossrpg/notion-ticktick-automation
-        name: analyzer_notionsync
-        path: .
-        branch: feat/analyzer-notion-export
+        with:
+          repo: thebossrpg/notion-ticktick-automation
+          name: analyzer_notionsync
+          path: .
+          branch: feat/analyzer-notion-export
 
       - name: Merge Notion pages into snapshot
         run: |
-          node dist/scripts/mergeNotionPagesIntoSnapshot.js snapshot.json analyzer_notionsync.json
+          node scripts/mergeNotionPagesIntoSnapshot.js snapshot.json analyzer_notionsync.json
 
       - name: Commit and push updated snapshot
         env:

@@ -30,17 +30,18 @@ jobs:
           search_artifacts: true
           if_no_artifact_found: fail
 
+      - name: Install deps and build
+        run: |
+          npm install
+          npm run build
+
       - name: List downloaded files
         run: ls -R
 
-
-      - name: Install deps
-        run: |
-          npm install
-
       - name: Merge Notion pages into snapshot
         run: |
-          npx ts-node scripts/mergeNotionPagesIntoSnapshot.ts snapshot.json analyzer_notionsync.json
+          node dist/scripts/mergeNotionPagesIntoSnapshot.js snapshot.json analyzer_notionsync.json
+
 
 
       - name: Commit and push updated snapshot

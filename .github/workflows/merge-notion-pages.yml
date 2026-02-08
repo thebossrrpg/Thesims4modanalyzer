@@ -30,10 +30,9 @@ jobs:
           search_artifacts: true
           if_no_artifact_found: fail
 
-      - name: Unzip analyzer_notionsync artifact
-        run: |
-          unzip -o analyzer_notionsync.zip -d analyzer_notionsync
-          ls -R analyzer_notionsync
+      - name: List downloaded files
+        run: ls -R
+
 
       - name: Merge Notion pages into snapshot
         run: |

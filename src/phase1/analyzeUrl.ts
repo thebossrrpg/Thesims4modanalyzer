@@ -114,27 +114,59 @@ function buildSlugFromPath(pathname: string): string {
 }
 
 /**
+ * Normaliza hash-routing ANTES de qualquer fase.
+ *
+ * Exemplo:
+ *   https://scumbumbomods.com/#/packing-crates/
+ *   → https://scumbumbomods.com/packing-crates/
+ *
+ * Para outros sites, só remove fragmento (#...).
+ */
+function normalizeHashRouting(raw: string): string {
+  try {
+    const url = new URL(raw);
+
+    if (url.hash.startsWith("#/")) {
+      const hashPath = url.hash.slice(2); // tira "#/"
+      url.pathname = "/" + hashPath.replace(/^\/+/, "");
+      url.hash = "";
+      return url.toString();
+    }
+
+    // default: só remove fragmento
+    if (url.hash) {
+      url.hash = "";
+    }
+
+    return url.toString();
+  } catch {
+    return raw;
+  }
+}
+
+/**
  * 🔒 Normalização determinística de URL para Phase 0 (match com snapshot)
- *
- * Objetivo: duas URLs "equivalentes" baterem, mesmo com pequenas variações:
- * - remove www
- * - força https
- * - normaliza slashes e remove trailing /
- * - remove hash
- * - remove query de tracking (utm_*, fbclid, gclid, etc.)
- * - ordena query restante (estabilidade)
- *
- * Observação: não mexe no case do path (pode ser case-sensitive).
  */
 function normalizeUrlForExactMatch(u: string): string {
   const raw = String(u ?? "").trim();
   if (!raw) return "";
 
-  // Se não for http(s), devolve raw (não é caso esperado pro seu fluxo)
+  // aceita URLs "reais" (com http/https) e também os formatos compactados do snapshot
+  // ex: "httpswww.curseforge.comsims4modssim-control-hub"
+  const looksLikeCompact = /^httpswww/i.test(raw) && !/^https?:\/\//i.test(raw);
+
+  // Se já parece compact, normaliza minimamente (lowercase + remove espaços) e retorna direto
+  // para que "needle" e "p.url" possam cair na mesma representação.
+  if (looksLikeCompact) {
+    return raw.replace(/\s+/g, "").toLowerCase();
+  }
+
   if (!/^https?:\/\//i.test(raw)) return raw;
 
   try {
-    const parsed = new URL(raw);
+    // IMPORTANTE: aplicar normalização de hash-routing antes
+    const normalized = normalizeHashRouting(raw);
+    const parsed = new URL(normalized);
 
     // protocol: force https
     parsed.protocol = "https:";
@@ -142,14 +174,13 @@ function normalizeUrlForExactMatch(u: string): string {
     // host normalize
     parsed.hostname = parsed.hostname.replace(/^www\./i, "").toLowerCase();
 
-    // drop fragment
-    parsed.hash = "";
-
     // path normalize
     parsed.pathname = parsed.pathname.replace(/\/{2,}/g, "/");
-    if (parsed.pathname.length > 1) parsed.pathname = parsed.pathname.replace(/\/+$/g, "");
+    if (parsed.pathname.length > 1) {
+      parsed.pathname = parsed.pathname.replace(/\/+$/g, "");
+    }
 
-    // query normalize: remove trackers + sort remaining
+    // query normalize (igual antes)
     const DROP_KEYS = new Set([
       "utm_source",
       "utm_medium",
@@ -184,8 +215,24 @@ function normalizeUrlForExactMatch(u: string): string {
     parsed.search = "";
     for (const [k, v] of kept) parsed.searchParams.append(k, v);
 
-    // Return without default port (URL does it), as full string
-    return parsed.toString();
+    const asUrl = parsed.toString();
+
+    // NOVO: representação "compact" para bater com snapshot legado
+    // (remove separadores e pontuação; mantém determinismo)
+    const compact = asUrl
+      .toLowerCase()
+      .replace(/^https:\/\//i, "https")
+      .replace(/\./g, "")
+      .replace(/\//g, "")
+      .replace(/\?/g, "")
+      .replace(/&/g, "")
+      .replace(/=/g, "")
+      .replace(/\s+/g, "");
+
+    // Heurística determinística: se a URL do snapshot é compacta, queremos retornar compact.
+    // Como aqui não sabemos "qual lado" estamos normalizando, retornamos a forma compact
+    // sempre (porque o Phase 0 só precisa de igualdade de string).
+    return compact;
   } catch {
     return raw;
   }
@@ -310,6 +357,7 @@ function tryNotionIdentity(url: string): Identity | null {
   loadSnapshotPages();
   if (!snapshotPages) return null;
 
+  // aplica a mesma normalização (incluindo hash-routing)
   const needle = normalizeUrlForExactMatch(url);
   if (!needle) return null;
 
@@ -321,8 +369,8 @@ function tryNotionIdentity(url: string): Identity | null {
 
   if (!match || !match.url) return null;
 
-  // ⚠️ Retorna a URL normalizada para reduzir inconsistência downstream
-  const finalUrl = normalizeUrlForExactMatch(match.url) || match.url;
+  // ✅ FIX: usa URL original (válida para new URL()), não a compactada
+  const finalUrl = match.url;
 
   const parsed = new URL(finalUrl);
   const domain = parsed.hostname.replace(/^www\./, "");
@@ -407,16 +455,19 @@ async function unfurlBlocked(url: string): Promise<UnfurlMeta | null> {
 }
 
 export async function analyzeUrl(url: string): Promise<Identity> {
+  // Normaliza hash-routing logo no início
+  const normalizedUrl = normalizeHashRouting(url);
+
   // ===== Phase 0 =====
-  const direct = tryNotionIdentity(url);
+  const direct = tryNotionIdentity(normalizedUrl);
   if (direct) return direct;
 
   // ===== Phase 1 =====
-  const parsed = new URL(url);
+  const parsed = new URL(normalizedUrl);
   const domain = parsed.hostname.replace(/^www\./, "");
   const urlSlug = buildSlugFromPath(parsed.pathname);
 
-  const html = await fetchHtml(url);
+  const html = await fetchHtml(normalizedUrl);
   const pageTitle = extractTitle(html);
   const ogTitle = extractMetaContent(html, "og:title");
   const ogSite = extractMetaContent(html, "og:site_name");
@@ -426,7 +477,7 @@ export async function analyzeUrl(url: string): Promise<Identity> {
   );
 
   let identity: Identity = {
-    url,
+    url: normalizedUrl,
     domain,
     urlSlug: urlSlug || "—",
     pageTitle,
@@ -438,7 +489,7 @@ export async function analyzeUrl(url: string): Promise<Identity> {
   };
 
   if (isBlocked) {
-    const meta = await unfurlBlocked(url);
+    const meta = await unfurlBlocked(normalizedUrl);
     if (meta) {
       identity = {
         ...identity,

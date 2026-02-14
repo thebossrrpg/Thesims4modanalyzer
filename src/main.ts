@@ -1,6 +1,8 @@
-// src/main.ts (v1.0.2 - com helper getNotionPageUrl)
+// src/main.ts (v1.0.5 - COM PHASE 3 + GATES RIGOROSOS)
+
 import { analyzeUrl } from './phase1/analyzeUrl.js';
 import { searchNotionCache } from './phase2/searchNotionCache.js';
+import { aiDisambiguate, isIdentityValidForAI } from './phase3/aiDisambiguate.js';
 import { getNotionPageUrl } from './utils/notion.js';
 import type { NotionCacheSnapshot } from './domain/snapshot.js';
 import type { Identity } from './domain/identity.js';
@@ -28,19 +30,19 @@ interface FinalResult {
     phase1: { ok: boolean };
     phase2: { ran: boolean; candidates: number };
     phase25: { ran: boolean; urlDiverge: boolean };
-    phase3: { ran: boolean };
+    phase3: { ran: boolean; aiConfidence?: number; aiReason?: string };
   };
   candidates: NotionPageWithScore[];
 }
 
 interface NotionPageWithScore {
-  notionid: string;          // ✅ camelCase (bate com phase2)
+  notionid: string;
   url: string;
   title: string | null;
   filename: string | null;
   creator: string | null;
-  createdtime: string;       // ✅ camelCase
-  lasteditedtime: string;    // ✅ camelCase
+  createdtime: string;
+  lasteditedtime: string;
   _score?: number;
   _reasons?: string[];
 }
@@ -89,7 +91,7 @@ try {
         result: 'FOUND',
         phaseResolved: 'PHASE_2',
         reason: 'Direct URL match in Notion snapshot (Phase 0 pre-check)',
-        notionId: notionPage.notion_Id,
+        notionId: notionPage.notion_id,
         notionUrl: notionPageUrlFormatted,
         displayName: notionPage.title ?? notionPage.filename ?? notionPage.url,
         phase2Candidates: 1,
@@ -171,12 +173,73 @@ try {
           notionPage2.title ?? notionPage2.filename
         );
       } else {
-        // URL não diverge, mas garante que notionUrl está formatada
         final.decision.notionUrl = getNotionPageUrl(
           notionPage2.notion_id,
           notionPage2.title ?? notionPage2.filename
         );
       }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // PHASE 3: IA pra desambiguação (COM GATES RIGOROSOS)
+  // ═══════════════════════════════════════════════════════
+  
+  // GATE 1: Só roda se Phase 2 retornou NOT_FOUND ou AMBIGUOUS
+  const phase2Failed = 
+    final.decision.result === 'NOT_FOUND' || 
+    final.decision.result === 'AMBIGUOUS';
+
+  // GATE 2: Precisa ter entre 2-5 candidatos
+  const hasCandidates = 
+    final.candidates.length >= 2 && 
+    final.candidates.length <= 5;
+
+  // GATE 3: Identidade precisa ser válida
+  const hasValidIdentity = isIdentityValidForAI(identity);
+
+  if (phase2Failed && hasCandidates && hasValidIdentity) {
+    console.log('\n🤖 [Phase 3] All gates passed, attempting AI disambiguation...');
+    
+    const aiResult = await aiDisambiguate(identity, final.candidates);
+    
+    final.phase.phase3 = {
+      ran: true,
+      aiConfidence: aiResult.confidence,
+      aiReason: aiResult.reason
+    };
+    
+    if (aiResult.matchedIndex >= 0 && aiResult.confidence >= 0.65) {
+      const matched = final.candidates[aiResult.matchedIndex];
+      
+      // Busca a página no snapshot pra pegar URL formatada
+      const matchedInSnapshot = Object.values(snapshot.notion_pages ?? {}).find(
+        (p: any) => p.notion_id === matched.notionid
+      ) as any;
+      
+      final.decision = {
+        result: 'FOUND',
+        phaseResolved: 'PHASE_3',
+        reason: `🤖 AI match: ${aiResult.reason} (confidence: ${(aiResult.confidence * 100).toFixed(0)}%)`,
+        notionId: matched.notionid,
+        notionUrl: matchedInSnapshot 
+          ? getNotionPageUrl(matchedInSnapshot.notion_id, matchedInSnapshot.title ?? matchedInSnapshot.filename)
+          : matched.url,
+        displayName: matched.title || matched.filename || 'Unknown'
+      };
+      
+      console.log('✅ [Phase 3] AI resolved ambiguity!');
+    } else {
+      console.log('⚠️ [Phase 3] AI could not confidently disambiguate');
+    }
+  } else {
+    // Log detalhado dos gates que falharam
+    if (!phase2Failed) {
+      console.log('⚠️ [Phase 3] Skipped: Phase 2 already found a match');
+    } else if (!hasCandidates) {
+      console.log(`⚠️ [Phase 3] Skipped: ${final.candidates.length} candidates (need 2-5)`);
+    } else if (!hasValidIdentity) {
+      console.log('⚠️ [Phase 3] Skipped: Identity quality too low for AI');
     }
   }
 
@@ -205,26 +268,17 @@ function loadSnapshot(path: string): NotionCacheSnapshot {
   }
 }
 
-/**
- * Normaliza URL para lookup canônico (para comparação "normal").
- * - Trata hash routing "#/slug" como path "/slug"
- * - Remove fragmento em outros casos
- */
 function normalizeUrlForSnapshot(rawUrl: string): string {
   const url = new URL(rawUrl);
 
   if (url.hash.startsWith('#/')) {
-    const hashPath = url.hash.slice(2); // remove "#/"
+    const hashPath = url.hash.slice(2);
     url.pathname = '/' + hashPath.replace(/^\/+/, '');
   }
   url.hash = '';
   return url.toString();
 }
 
-/**
- * Gera chaves determinísticas (múltiplas) para bater em snapshots que armazenam URL "compactado"
- * Ex.: "httpswww.curseforge.comsims4modssim-control-hub"
- */
 function urlLookupKeys(rawUrl: string): string[] {
   if (!rawUrl) return [];
 
@@ -232,14 +286,13 @@ function urlLookupKeys(rawUrl: string): string[] {
   try {
     canonical = normalizeUrlForSnapshot(canonical);
   } catch {
-    // snapshot pode ter lixo; só retorna variantes do raw mesmo
+    // snapshot pode ter lixo
   }
 
   const noScheme = canonical.replace(/^https?:\/\//i, '');
   const compact = noScheme.replace(/[./]/g, '');
   const compactNoWww = noScheme.replace(/^www\./i, '').replace(/[./]/g, '');
 
-  // também tenta sem trailing slash
   const canonicalNoSlash = canonical.endsWith('/') ? canonical.slice(0, -1) : canonical;
   const noSchemeNoSlash = canonicalNoSlash.replace(/^https?:\/\//i, '');
   const compactNoSlash = noSchemeNoSlash.replace(/[./]/g, '');
@@ -257,11 +310,8 @@ function urlLookupKeys(rawUrl: string): string[] {
   ]));
 }
 
-/**
- * UX "humana" da CLI
- */
 function printHumanSummary(final: FinalResult): void {
-  const { identity, decision, candidates } = final;
+  const { identity, decision, candidates, phase } = final;
 
   const title =
     identity.pageTitle ??
@@ -278,9 +328,16 @@ function printHumanSummary(final: FinalResult): void {
     if (decision.notionUrl) console.log(`   🔗 Notion: ${decision.notionUrl}`);
     if (decision.urlDiverge) console.log('   ⚠️  URL diverge detectada!');
     if (decision.reason) console.log(`   Motivo: ${decision.reason}`);
+    
+    if (decision.phaseResolved === 'PHASE_3' && phase.phase3.aiConfidence) {
+      console.log(`   🤖 AI confidence: ${(phase.phase3.aiConfidence * 100).toFixed(0)}%`);
+    }
   } else {
     console.log('\nℹ️ Não foi possível encontrar um match no Notion.');
-    console.log('⚠️ Phase 3 (fallback com IA) ainda não implementada.');
+    
+    if (phase.phase3.ran) {
+      console.log(`⚠️ Phase 3 (IA) executou mas não conseguiu resolver (confidence: ${(phase.phase3.aiConfidence || 0) * 100}%).`);
+    }
   }
 
   if (candidates.length > 0) {

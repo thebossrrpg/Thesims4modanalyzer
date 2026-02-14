@@ -9,7 +9,8 @@
     "strict": true,
     "types": ["node"],
     "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "allowImportingTsExtensions": false
   },
-  "include": ["src", "scripts"]
+  "include": ["src/**/*"]
 }

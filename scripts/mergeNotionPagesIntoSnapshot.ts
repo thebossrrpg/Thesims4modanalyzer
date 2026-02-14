@@ -16,6 +16,9 @@ type AnalyzerNotionPage = {
 function normalizeAnalyzerPages(raw: any): AnalyzerNotionPage[] {
   if (!raw) return [];
 
+  // ✅ FIX: detecta { pages: [array] } primeiro
+  if (Array.isArray(raw.pages)) return raw.pages as AnalyzerNotionPage[];
+
   const pagesRaw = raw.pages ?? raw.Pages ?? raw.notion_pages ?? null;
 
   // formato: { pages: [ ... ] }

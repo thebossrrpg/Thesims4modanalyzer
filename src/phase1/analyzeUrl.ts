@@ -1,3 +1,4 @@
+// src/phase1/analyzeUrl.ts
 import ogs from "open-graph-scraper";
 import fs from "node:fs";
 import path from "node:path";
@@ -42,7 +43,6 @@ type IframelyUsage = {
 
 const CACHE_DIR = path.resolve(process.cwd(), ".cache");
 const IFRAMELY_USAGE_FILE = path.join(CACHE_DIR, "iframely-usage.json");
-const NOTIONCACHE_FILE = path.join(CACHE_DIR, "notioncache.json");
 
 // ===== Debug helper =====
 
@@ -79,7 +79,9 @@ function readIframelyUsage(): IframelyUsage {
       month,
       hits: Number.isFinite(data.hits) ? data.hits : 0,
       cooldownUntilMs:
-        typeof data.cooldownUntilMs === "number" ? data.cooldownUntilMs : undefined
+        typeof data.cooldownUntilMs === "number"
+          ? data.cooldownUntilMs
+          : undefined
     };
   } catch {
     return { month, hits: 0 };
@@ -111,18 +113,90 @@ function buildSlugFromPath(pathname: string): string {
     .trim();
 }
 
+/**
+ * 🔒 Normalização determinística de URL para Phase 0 (match com snapshot)
+ *
+ * Objetivo: duas URLs "equivalentes" baterem, mesmo com pequenas variações:
+ * - remove www
+ * - força https
+ * - normaliza slashes e remove trailing /
+ * - remove hash
+ * - remove query de tracking (utm_*, fbclid, gclid, etc.)
+ * - ordena query restante (estabilidade)
+ *
+ * Observação: não mexe no case do path (pode ser case-sensitive).
+ */
+function normalizeUrlForExactMatch(u: string): string {
+  const raw = String(u ?? "").trim();
+  if (!raw) return "";
+
+  // Se não for http(s), devolve raw (não é caso esperado pro seu fluxo)
+  if (!/^https?:\/\//i.test(raw)) return raw;
+
+  try {
+    const parsed = new URL(raw);
+
+    // protocol: force https
+    parsed.protocol = "https:";
+
+    // host normalize
+    parsed.hostname = parsed.hostname.replace(/^www\./i, "").toLowerCase();
+
+    // drop fragment
+    parsed.hash = "";
+
+    // path normalize
+    parsed.pathname = parsed.pathname.replace(/\/{2,}/g, "/");
+    if (parsed.pathname.length > 1) parsed.pathname = parsed.pathname.replace(/\/+$/g, "");
+
+    // query normalize: remove trackers + sort remaining
+    const DROP_KEYS = new Set([
+      "utm_source",
+      "utm_medium",
+      "utm_campaign",
+      "utm_term",
+      "utm_content",
+      "utm_id",
+      "utm_name",
+      "utm_reader",
+      "utm_viz_id",
+      "fbclid",
+      "gclid",
+      "msclkid",
+      "yclid",
+      "twclid",
+      "igshid",
+      "ref",
+      "ref_src",
+      "source"
+    ]);
+
+    const kept = Array.from(parsed.searchParams.entries()).filter(([k, v]) => {
+      const key = k.toLowerCase().trim();
+      if (!key) return false;
+      if (DROP_KEYS.has(key)) return false;
+      if (key.startsWith("utm_")) return false;
+      return String(v ?? "").trim().length > 0;
+    });
+
+    kept.sort(([a], [b]) => a.localeCompare(b));
+
+    parsed.search = "";
+    for (const [k, v] of kept) parsed.searchParams.append(k, v);
+
+    // Return without default port (URL does it), as full string
+    return parsed.toString();
+  } catch {
+    return raw;
+  }
+}
+
 function extractTitle(html: string): string | null {
   const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
   if (!m) return null;
   return m[1].replace(/\s+/g, " ").trim() || null;
 }
 
-/**
- * Extrai meta content por:
- * - property="og:title"
- * - property="og:site_name"
- * - name="og:title" (fallback)
- */
 function extractMetaContent(html: string, key: string): string | null {
   const re = new RegExp(
     `<meta[^>]+(?:property|name)=["']${key}["'][^>]*content=["']([^"']+)["'][^>]*>`,
@@ -152,24 +226,17 @@ function isUsefulMeta(meta: UnfurlMeta): boolean {
 
 async function fetchHtml(url: string): Promise<string> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 25000);
+  const timeout = setTimeout(() => controller.abort(), 25_000);
 
   try {
-    debugLog(`[unfurl] fetchHtml start url=${url}`);
     const res = await fetch(url, {
       method: "GET",
       headers: REQUEST_HEADERS,
       redirect: "follow",
       signal: controller.signal
     });
-
-    const text = await res.text();
-    debugLog(
-      `[unfurl] fetchHtml done url=${url} status=${res.status} length=${text.length}`
-    );
-    return text || "";
-  } catch (err) {
-    debugLog(`[unfurl] fetchHtml error url=${url} err=${String(err)}`);
+    return (await res.text()) || "";
+  } catch {
     return "";
   } finally {
     clearTimeout(timeout);
@@ -199,124 +266,99 @@ function setCachedUnfurl(url: string, meta: UnfurlMeta, ttlMs: number): void {
   unfurlCache.set(url, { meta, expiresAtMs: nowMs() + ttlMs });
 }
 
-// ===== Notioncache pré-fase 1 =====
+// ===== Snapshot pré-fase 1 (Phase 0) =====
 
 type NotionPage = {
   notion_id: string;
-  created_time?: string;
-  last_edited_time?: string;
   filename?: string | null;
   url?: string | null;
   creator?: string | null;
 };
 
-type NotionCache = {
-  pages?: Record<string, NotionPage>;
+type Snapshot = {
+  notion_pages?: Record<string, NotionPage>;
+  phase_2_cache?: { pages?: Record<string, NotionPage> };
 };
 
-let notionCacheLoaded = false;
-let notionCache: NotionCache | null = null;
+let snapshotLoaded = false;
+let snapshotPages: Record<string, NotionPage> | null = null;
 
-function loadNotionCache(): void {
-  if (notionCacheLoaded) return;
-  notionCacheLoaded = true;
+function loadSnapshotPages(): void {
+  if (snapshotLoaded) return;
+  snapshotLoaded = true;
+
   try {
-    ensureCacheDir();
-    const raw = fs.readFileSync(NOTIONCACHE_FILE, "utf-8");
-    const data = JSON.parse(raw) as NotionCache;
-    if (!data || typeof data !== "object") {
-      debugLog("[unfurl] notioncache invalid structure");
-      notionCache = null;
-      return;
+    const raw = fs.readFileSync(
+      path.resolve(process.cwd(), "snapshot.json"),
+      "utf-8"
+    );
+    const snap = JSON.parse(raw) as Snapshot;
+
+    snapshotPages = snap.notion_pages ?? snap.phase_2_cache?.pages ?? null;
+
+    if (snapshotPages) {
+      debugLog(
+        `[unfurl] snapshot loaded pages=${Object.keys(snapshotPages).length}`
+      );
     }
-    notionCache = data;
-    debugLog("[unfurl] notioncache loaded");
-  } catch (err) {
-    debugLog(`[unfurl] notioncache load failed err=${String(err)}`);
-    notionCache = null;
+  } catch {
+    snapshotPages = null;
   }
 }
 
 function tryNotionIdentity(url: string): Identity | null {
-  loadNotionCache();
-  if (!notionCache || !notionCache.pages) {
-    debugLog("[unfurl] notion_direct skipped (no pages)");
-    return null;
-  }
+  loadSnapshotPages();
+  if (!snapshotPages) return null;
 
-  const pages = Object.values(notionCache.pages);
-  const match = pages.find((p) => p.url && p.url === url);
-  if (!match || !match.url) {
-    debugLog("[unfurl] notion_direct no-match");
-    return null;
-  }
+  const needle = normalizeUrlForExactMatch(url);
+  if (!needle) return null;
 
-  const parsed = new URL(match.url);
+  const match = Object.values(snapshotPages).find((p) => {
+    if (!p?.url) return false;
+    const pNorm = normalizeUrlForExactMatch(p.url);
+    return pNorm === needle;
+  });
+
+  if (!match || !match.url) return null;
+
+  // ⚠️ Retorna a URL normalizada para reduzir inconsistência downstream
+  const finalUrl = normalizeUrlForExactMatch(match.url) || match.url;
+
+  const parsed = new URL(finalUrl);
   const domain = parsed.hostname.replace(/^www\./, "");
   const urlSlug = buildSlugFromPath(parsed.pathname);
-  const title = (match.filename ?? "").trim() || null;
+  const title = match.filename?.trim() || null;
 
-  debugLog(
-    `[unfurl] notion_direct match notion_id=${match.notion_id} filename=${match.filename ?? ""}`
-  );
-
-  const identity: Identity = {
-    url: match.url,
+  return {
+    url: finalUrl,
     domain,
     urlSlug: urlSlug || "—",
     pageTitle: title,
     ogTitle: title,
-    ogSite: "NotionCache",
+    ogSite: "Snapshot",
     isBlocked: false,
     unfurlVia: "notion_direct",
     fallbackLabel: `${domain} · ${urlSlug || "—"}`
   };
-
-  return identity;
 }
 
-// ===== Providers =====
+// ===== Providers (Phase 1) =====
 
-// 1) FREE: og-web-scraper-api.vercel.app
 async function tryOgWebApi(url: string): Promise<UnfurlMeta | null> {
-  debugLog(`[unfurl] tryOgWebApi url=${url}`);
-  const endpoint = `https://og-web-scraper-api.vercel.app/scrape?url=${encodeURIComponent(
-    url
-  )}`;
-  const res = await fetch(endpoint, { method: "GET" });
+  const res = await fetch(
+    `https://og-web-scraper-api.vercel.app/scrape?url=${encodeURIComponent(url)}`
+  );
+  if (!res.ok) return null;
 
-  if (!res.ok) {
-    debugLog(`[unfurl] ogWebApi http=${res.status}`);
-    if (res.status === 429) throw new Error("OGWEB_RATE_LIMIT");
-    if (res.status === 403) throw new Error("OGWEB_FORBIDDEN");
-    return null;
-  }
-
-  const data = (await res.json()) as any;
-
-  const title =
-    (typeof data?.ogTitle === "string" ? data.ogTitle : null) ??
-    (typeof data?.title === "string" ? data.title : null) ??
-    (typeof data?.itemTitle === "string" ? data.itemTitle : null) ??
-    null;
-
-  const ogSite =
-    (typeof data?.ogSiteName === "string" ? data.ogSiteName : null) ??
-    (typeof data?.og?.site_name === "string" ? data.og.site_name : null) ??
-    null;
+  const data: any = await res.json();
+  const title = data?.ogTitle ?? data?.title ?? null;
+  const ogSite = data?.ogSiteName ?? null;
 
   const meta = normalizeMeta({ title, ogTitle: title, ogSite }, "og_web_scraper");
-  if (!isUsefulMeta(meta)) {
-    debugLog("[unfurl] ogWebApi useless-meta");
-    return null;
-  }
-  debugLog("[unfurl] ogWebApi success");
-  return meta;
+  return isUsefulMeta(meta) ? meta : null;
 }
 
-// 2) FREE: open-graph-scraper local
 async function tryLocalOgs(url: string): Promise<UnfurlMeta | null> {
-  debugLog(`[unfurl] tryLocalOgs url=${url}`);
   const result = await ogs({
     url,
     timeout: 8000,
@@ -325,86 +367,51 @@ async function tryLocalOgs(url: string): Promise<UnfurlMeta | null> {
   });
 
   const r: any = result?.result ?? null;
-  if (!r) {
-    debugLog("[unfurl] localOgs no-result");
-    return null;
-  }
+  if (!r) return null;
 
   const meta = normalizeMeta(
     {
-      title: typeof r.title === "string" ? r.title : null,
-      ogTitle: typeof r.ogTitle === "string" ? r.ogTitle : null,
-      ogSite: typeof r.ogSiteName === "string" ? r.ogSiteName : null
+      title: r.title ?? null,
+      ogTitle: r.ogTitle ?? null,
+      ogSite: r.ogSiteName ?? null
     },
     "local_ogs"
   );
 
-  if (!isUsefulMeta(meta)) {
-    debugLog("[unfurl] localOgs useless-meta");
-    return null;
-  }
-  debugLog("[unfurl] localOgs success");
-  return meta;
+  return isUsefulMeta(meta) ? meta : null;
 }
 
 async function unfurlBlocked(url: string): Promise<UnfurlMeta | null> {
   const cached = getCachedUnfurl(url);
-  if (cached) {
-    debugLog(`[unfurl] cache hit via=${cached.via} url=${url}`);
-    return cached;
-  }
-
-  const GOOD_TTL = 6 * 60 * 60_000;
+  if (cached) return cached;
 
   if (canTry("ogWebApi")) {
-    debugLog("[unfurl] provider=ogWebApi eligible");
-    try {
-      const meta = await tryOgWebApi(url);
-      if (meta) {
-        setCachedUnfurl(url, meta, GOOD_TTL);
-        return meta;
-      }
-      cooldown("ogWebApi", 5 * 60_000);
-    } catch (e: any) {
-      const msg = String(e?.message ?? "");
-      debugLog(`[unfurl] ogWebApi error msg=${msg}`);
-      cooldown("ogWebApi", msg.includes("RATE_LIMIT") ? 30 * 60_000 : 10 * 60_000);
+    const meta = await tryOgWebApi(url);
+    if (meta) {
+      setCachedUnfurl(url, meta, 6 * 60 * 60_000);
+      return meta;
     }
-  } else {
-    debugLog("[unfurl] provider=ogWebApi on-cooldown");
+    cooldown("ogWebApi", 5 * 60_000);
   }
 
   if (canTry("localOgs")) {
-    debugLog("[unfurl] provider=localOgs eligible");
-    try {
-      const meta = await tryLocalOgs(url);
-      if (meta) {
-        setCachedUnfurl(url, meta, GOOD_TTL);
-        return meta;
-      }
-      cooldown("localOgs", 2 * 60_000);
-    } catch (e: any) {
-      debugLog(`[unfurl] localOgs error msg=${String(e)}`);
-      cooldown("localOgs", 2 * 60_000);
+    const meta = await tryLocalOgs(url);
+    if (meta) {
+      setCachedUnfurl(url, meta, 6 * 60 * 60_000);
+      return meta;
     }
-  } else {
-    debugLog("[unfurl] provider=localOgs on-cooldown");
+    cooldown("localOgs", 2 * 60_000);
   }
 
-  debugLog("[unfurl] all providers exhausted, returning null");
   return null;
 }
 
 export async function analyzeUrl(url: string): Promise<Identity> {
-  debugLog(`[unfurl] analyzeUrl start url=${url}`);
+  // ===== Phase 0 =====
+  const direct = tryNotionIdentity(url);
+  if (direct) return direct;
 
-  // Pré-fase 1: tentar resolver diretamente via notioncache (match exato da URL)
-  const notionIdentity = tryNotionIdentity(url);
-  if (notionIdentity) {
-    debugLog("[unfurl] resolved via notion_direct (pre-phase1)");
-    return notionIdentity;
-  }
-
+  // ===== Phase 1 =====
   const parsed = new URL(url);
   const domain = parsed.hostname.replace(/^www\./, "");
   const urlSlug = buildSlugFromPath(parsed.pathname);
@@ -413,10 +420,9 @@ export async function analyzeUrl(url: string): Promise<Identity> {
   const pageTitle = extractTitle(html);
   const ogTitle = extractMetaContent(html, "og:title");
   const ogSite = extractMetaContent(html, "og:site_name");
-  const isBlocked = detectBlocked(html.toLowerCase(), pageTitle?.toLowerCase() ?? null);
-
-  debugLog(
-    `[unfurl] initial html parsed isBlocked=${isBlocked} pageTitle=${pageTitle ?? ""}`
+  const isBlocked = detectBlocked(
+    html.toLowerCase(),
+    pageTitle?.toLowerCase() ?? null
   );
 
   let identity: Identity = {
@@ -432,56 +438,19 @@ export async function analyzeUrl(url: string): Promise<Identity> {
   };
 
   if (isBlocked) {
-    debugLog("[unfurl] html detected blocked, entering unfurlBlocked()");
     const meta = await unfurlBlocked(url);
-
     if (meta) {
       identity = {
         ...identity,
-        pageTitle: meta.ogTitle || meta.title || identity.pageTitle,
-        ogTitle: meta.ogTitle || identity.ogTitle,
-        ogSite: meta.ogSite || identity.ogSite,
+        pageTitle: meta.ogTitle ?? meta.title ?? identity.pageTitle,
+        ogTitle: meta.ogTitle ?? identity.ogTitle,
+        ogSite: meta.ogSite ?? identity.ogSite,
         unfurlVia: meta.via
       };
-      debugLog(`[unfurl] blocked resolved via=${meta.via}`);
     } else {
-      identity = { ...identity, unfurlVia: "fallback" };
-      debugLog("[unfurl] blocked unresolved, using fallback");
+      identity.unfurlVia = "fallback";
     }
-  } else {
-    debugLog("[unfurl] html not blocked, skipping unfurlBlocked()");
   }
-
-  if (
-    identity.isBlocked &&
-    identity.pageTitle &&
-    BLOCKED_PATTERNS.test(identity.pageTitle)
-  ) {
-    debugLog("[unfurl] pageTitle matched BLOCKED_PATTERNS, clearing pageTitle");
-    identity.pageTitle = null;
-  }
-
-  // ===== Sugestão de Iframely para UX (não chama a API aqui) =====
-
-  const usage = readIframelyUsage();
-  const softLimit = getIframelySoftLimit();
-
-  const shouldSuggestIframely =
-    usage.hits >= softLimit &&
-    identity.isBlocked &&
-    !identity.pageTitle &&
-    !identity.ogTitle;
-
-  if (shouldSuggestIframely) {
-    (identity as any).iframelySuggestion = "hit";
-    debugLog(
-      `[unfurl] iframelySuggestion=hit hits=${usage.hits} softLimit=${softLimit} url=${url}`
-    );
-  }
-
-  debugLog(
-    `[unfurl] analyzeUrl done via=${identity.unfurlVia} title=${identity.pageTitle ?? identity.ogTitle ?? ""}`
-  );
 
   return identity;
 }

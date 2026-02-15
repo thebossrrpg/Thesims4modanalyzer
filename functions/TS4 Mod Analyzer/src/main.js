@@ -1,0 +1,63 @@
+import { Client, Databases } from 'node-appwrite';
+import axios from 'axios';
+import cheerio from 'cheerio';
+
+export default async ({ req, res, log, error }) => {
+  const client = new Client()
+    .setEndpoint(process.env.APPWRITE_FUNCTION_API_ENDPOINT)
+    .setProject(process.env.APPWRITE_FUNCTION_PROJECT_ID)
+    .setKey(process.env.APPWRITE_FUNCTION_API_KEY);
+
+  const databases = new Databases(client);
+
+  // Phase 1: Extract identity from URL
+  const url = req.body?.url || req.variables?.url;
+  log(`Analyzing URL: ${url}`);
+
+  if (!url) {
+    return res.json({ error: "URL required" }, 400);
+  }
+
+  try {
+    // Fetch page (simplified)
+    const response = await axios.get(url, { timeout: 10000 });
+    const $ = cheerio.load(response.data);
+    
+    const pagetitle = $('title').text().trim();
+    const identity = {
+      pagetitle,
+      url,
+      raw: response.data.slice(0, 1000) // first 1k chars
+    };
+
+    // Phase 2: Check notioncache (simplified)
+    const { documents } = await databases.listDocuments(
+      '6990e13d003294db127d', // your DB ID
+      'notion_cache'
+    );
+
+    // Simple matching logic
+    const match = documents.find(doc => 
+      doc.data.url?.includes(url.split('/').pop()) ||
+      doc.data.title?.toLowerCase().includes(pagetitle.toLowerCase())
+    );
+
+    const result = match ? {
+      status: "FOUND",
+      notionid: match.$id,
+      origin: "PHASE2_DETERMINISTIC",
+      identity
+    } : {
+      status: "NOTFOUND", 
+      identity,
+      candidates: 0
+    };
+
+    log(`Result: ${JSON.stringify(result)}`);
+    return res.json(result);
+
+  } catch (err) {
+    error(err.message);
+    return res.json({ error: err.message }, 500);
+  }
+};

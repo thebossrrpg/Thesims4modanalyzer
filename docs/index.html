@@ -144,12 +144,15 @@
             margin-top: 30px;
             color: #999;
             font-size: 0.85rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
         }
         
         .footer img {
-            height: 20px;
-            vertical-align: middle;
-            margin-right: 6px;
+            height: 18px;
+            display: block;
         }
     </style>
 </head>
@@ -180,7 +183,7 @@
         
         <div class="footer">
             <img src="https://64.media.tumblr.com/05d22b63711d2c391482d6faad367ccb/675ea15a79446393-0d/s96x96u_c1/10c6e06c1ea95a565da2dd283697116d3e7eca03.pnj">
-            v1.0.5 | Criado por Akin @UnpaidSimmer
+            <span>Criado por Akin @UnpaidSimmer | v1.0.5</span>
         </div>
     </div>
 
@@ -202,7 +205,6 @@
             const url = urlInput.value.trim();
             if (!url) return;
             
-            // UI loading state
             submitBtn.disabled = true;
             btnText.style.display = 'none';
             spinner.style.display = 'block';
@@ -219,7 +221,6 @@
                 
                 const data = await response.json();
                 
-                // Show result
                 result.style.display = 'block';
                 
                 if (data.status === 'FOUND') {
@@ -243,7 +244,6 @@
                     resultContent.textContent = data.error || 'Erro desconhecido';
                 }
                 
-                // Show full JSON
                 const jsonOutput = document.createElement('div');
                 jsonOutput.className = 'json-output';
                 jsonOutput.textContent = JSON.stringify(data, null, 2);

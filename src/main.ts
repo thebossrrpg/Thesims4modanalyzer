@@ -1,16 +1,22 @@
-// src/main.ts
+// src/main.ts — v1.1.0-merged
+//
+// ┌─ Do v1 → CacheEngine (URL cache + evidence-based cache), persistDecision
+// └─ Do v2 → AnalyzerJsonOutput tipado, DebugExpander por fase, emit(),
+//            contrato de saídas estruturado (FOUND / AMBIGUOUS / NOTFOUND / REJECTED_404)
+//
+// [BUG-FIX] Gate Phase 3: "NOT_FOUND" → "NOTFOUND"
+// [STUB]    Phase 2.5 — roteamento correto, implementação pendente
+// [STUB]    Phase 3   — Notion live por pageId pendente (AI stub mantido)
 
-import { analyzeUrl } from "./phase1/analyzeUrl.js";
-import { searchNotionCache } from "./phase2/searchNotionCache.js";
-import { aiDisambiguate, isIdentityValidForAI } from "./phase3/aiDisambiguate.js";
-import { getNotionPageUrl } from "./utils/notion.js";
-import { CacheEngine } from "./utils/cacheEngine.js";
+import { analyzeUrl } from './phase1/analyzeUrl.js';
+import { searchNotionCache } from './phase2/searchNotionCache.js';
+import { aiDisambiguate, isIdentityValidForAI } from './phase3/aiDisambiguate.js';
+import { getNotionPageUrl } from './utils/notion.js';
+import { CacheEngine } from './utils/cacheEngine.js';
+import fs from 'fs';
 
-import fs from "fs";
-
-import type { NotionCacheSnapshot, NotionPage } from "./domain/snapshot.js";
-import type { Identity, UnfurlVia } from "./domain/identity.js";
-
+import type { NotionCacheSnapshot, NotionPage } from './domain/snapshot.js';
+import type { Identity, UnfurlVia } from './domain/identity.js';
 import type {
   AnalyzerJsonOutput,
   DebugExpander,
@@ -18,83 +24,79 @@ import type {
   CandidateDebug,
   AnalyzerResultStatus,
   PhaseResolved
-} from "./domain/analyzerJsonOutput.js";
+} from './domain/analyzerJsonOutput.js';
+
+// ─────────────────────────────────────────────────────────────
+// ARGS
+// ─────────────────────────────────────────────────────────────
 
 const rawArgs = process.argv.slice(2);
-const inputUrl = rawArgs.find((a) => !a.startsWith("--"));
-const flagJson = rawArgs.includes("--json");
-
+const inputUrl = rawArgs.find((a) => !a.startsWith('--'));
+const flagJson = rawArgs.includes('--json');
 const startedAt = new Date().toISOString();
 
 // ─────────────────────────────────────────────────────────────
-// Output
+// OUTPUT
 // ─────────────────────────────────────────────────────────────
 
-function emit(output: AnalyzerJsonOutput) {
+function emit(out: AnalyzerJsonOutput): void {
   if (flagJson) {
-    console.log(JSON.stringify(output, null, 2));
+    console.log(JSON.stringify(out, null, 2));
   } else {
-    printHumanSummary(output);
+    printHumanSummary(out);
   }
 }
 
-function printHumanSummary(out: AnalyzerJsonOutput) {
+function printHumanSummary(out: AnalyzerJsonOutput): void {
   console.log(`\n🔗 ${out.inputUrl}`);
   console.log(`📌 Resultado: ${out.status}`);
   if (out.reason) console.log(`🧠 Motivo: ${out.reason}`);
 
-  if (out.status === "FOUND" && out.found) {
+  if (out.status === 'FOUND' && out.found) {
     console.log(`✅ Match: ${out.found.title ?? out.found.pageId}`);
-    if (out.found.pageUrl) console.log(`🗂️ Notion: ${out.found.pageUrl}`);
+    if (out.found.pageUrl) console.log(`🗂️  Notion: ${out.found.pageUrl}`);
   }
 
-  if (out.status === "AMBIGUOUS" && out.ambiguous) {
-    console.log(`⚠️ Candidatos: ${out.ambiguous.pageIds.join(", ")}`);
+  if (out.status === 'AMBIGUOUS' && out.ambiguous) {
+    console.log(`⚠️  Candidatos: ${out.ambiguous.pageIds.join(', ')}`);
   }
 
-  if (out.status === "REJECTED_404") {
-    const r = out.debug.validation.rejected404Reason ?? "(sem motivo)";
+  if (out.status === 'REJECTED_404') {
+    const r = out.debug.validation.rejected404Reason ?? '(sem motivo)';
     console.log(`⛔ URL rejeitada: ${r}`);
   }
 
-  console.log("");
+  console.log('');
 }
 
 // ─────────────────────────────────────────────────────────────
-// Snapshot helpers
+// HELPERS — snapshot / Phase 0 / 0.5
 // ─────────────────────────────────────────────────────────────
 
 function loadSnapshot(path: string): NotionCacheSnapshot {
-  const raw = fs.readFileSync(path, "utf-8");
+  const raw = fs.readFileSync(path, 'utf-8');
   return JSON.parse(raw) as NotionCacheSnapshot;
 }
 
-function urlLookupKeys(rawUrl: string) {
+function urlLookupKeys(rawUrl: string): string[] {
   if (!rawUrl) return [];
   const canonical = rawUrl.trim();
-  const noScheme = canonical.replace(/^https?:\/\//i, "");
-  const compact = noScheme.replace(/[./]/g, "");
+  const noScheme = canonical.replace(/^https?:\/\//i, '');
+  const compact = noScheme.replace(/[./]/g, '');
   return [canonical, noScheme, compact];
 }
 
 function extractFinalSlug(rawUrl: string): { slug: string; domain: string } | null {
   try {
     const url = new URL(rawUrl);
-    const domain = url.hostname.replace(/^www\./i, "").toLowerCase();
-
+    const domain = url.hostname.replace(/^www\./i, '').toLowerCase();
     const parts = url.pathname
-      .replace(/^\/+|\/+$/g, "")
-      .split("/")
+      .replace(/^\/+|\/+$/g, '')
+      .split('/')
       .filter(Boolean);
-
     if (!parts.length) return null;
-
-    const slug = parts[parts.length - 1]
-      .toLowerCase()
-      .replace(/[^a-z0-9\-]/g, "");
-
+    const slug = parts[parts.length - 1].toLowerCase().replace(/[^a-z0-9\-]/g, '');
     if (!slug) return null;
-
     return { slug, domain };
   } catch {
     return null;
@@ -102,205 +104,132 @@ function extractFinalSlug(rawUrl: string): { slug: string; domain: string } | nu
 }
 
 // ─────────────────────────────────────────────────────────────
-// Debug/schema mapping helpers
+// HELPERS — debug
 // ─────────────────────────────────────────────────────────────
 
 function mapUnfurlViaToProvider(via: UnfurlVia): ProviderUsed {
   switch (via) {
-    case "og_web_scraper":
-      return "html";
-    case "local_ogs":
-      return "localOgs";
-    case "iframely":
-      return "iframely";
-    default:
-      return "html";
+    case 'og_web_scraper': return 'html';
+    case 'local_ogs':      return 'localOgs';
+    case 'iframely':       return 'iframely';
+    default:               return 'html';
   }
 }
 
-function candidatesToDebugTop5(candidates: NotionPage[] | undefined): CandidateDebug[] {
-  if (!candidates || candidates.length === 0) return [];
+function candidatesToDebugTop5(candidates: NotionPage[]): CandidateDebug[] {
   return candidates.slice(0, 5).map((c: any) => ({
-    title: (c.title ?? c.filename ?? c.url ?? "Unknown") as string,
-    pageId: (c.notion_id ?? "") as string,
-    score: typeof c._score === "number" ? c._score : 0
+    title: (c.title ?? c.filename ?? c.url ?? 'Unknown') as string,
+    pageId: (c.notion_id ?? '') as string,
+    score: typeof c._score === 'number' ? c._score : 0
   }));
 }
 
-// CacheEngine usa phaseResolved livre ("phase0", "phase0.5", "phase2"...)
-// JSON usa enum ("PHASE_0", "PHASE_0_5"...)
+// ─────────────────────────────────────────────────────────────
+// HELPERS — cache (v1)
+// ─────────────────────────────────────────────────────────────
 
-function toCachePhaseResolved(phase: PhaseResolved): string {
-  switch (phase) {
-    case "PHASE_0":
-      return "phase0";
-    case "PHASE_0_5":
-      return "phase0.5";
-    case "PHASE_2":
-      return "phase2";
-    case "PHASE_3":
-      return "phase3";
-    case "REJECTED_404":
-      return "rejected_404";
-    default:
-      return "phase2";
-  }
+function persistDecision(
+  cache: CacheEngine,
+  url: string,
+  out: AnalyzerJsonOutput,
+  evidenceKey?: string,
+  candidates?: NotionPage[]
+): void {
+  const entry = cache.makeDecisionEntry({
+    result: out.status,
+    reason: out.reason ?? '',
+    phaseResolved: out.phaseResolved,
+    url,
+    evidenceKey,
+    chosenNotionId: out.found?.pageId,
+    candidates: candidates ?? []
+  });
+  cache.setUrlDecision(url, entry);
+  if (evidenceKey) cache.setDecision(evidenceKey, entry);
+  cache.save();
 }
 
-function fromCachePhaseResolved(phase: string | undefined): PhaseResolved {
-  const p = (phase ?? "").toLowerCase().trim();
-
-  if (p === "phase0") return "PHASE_0";
-  if (p === "phase0.5" || p === "phase0_5") return "PHASE_0_5";
-  if (p === "phase2") return "PHASE_2";
-  if (p === "phase3") return "PHASE_3";
-  if (p === "rejected_404" || p === "rejected404") return "REJECTED_404";
-
-  // fallback seguro
-  return "PHASE_2";
-}
-
-// Converte DecisionEntry (CacheEngine) => AnalyzerJsonOutput (seu schema UI)
-function decisionEntryToAnalyzerOutput(params: {
-  entry: any;
-  inputUrl: string;
-  debug: DebugExpander;
-  meta?: AnalyzerJsonOutput["meta"];
-  // opcional: para hidratar displayName com candidatos atuais
-  candidatesForHydration?: NotionPage[];
-}): AnalyzerJsonOutput {
-  const { entry, inputUrl, debug, meta, candidatesForHydration } = params;
-
-  const status = entry?.result as AnalyzerResultStatus;
-  const phaseResolved = fromCachePhaseResolved(entry?.phaseResolved);
-  const reason = entry?.reason as string | undefined;
-
-  const out: AnalyzerJsonOutput = {
-    startedAt,
-    inputUrl,
-    status,
-    phaseResolved,
-    reason,
-    meta,
-    debug
+function hydrateFoundFromCandidates(
+  notionId: string,
+  candidates: NotionPage[]
+): { pageId: string; pageUrl?: string; title: string } {
+  const match = candidates.find((c: any) => c.notion_id === notionId);
+  const title = match
+    ? ((match as any).title ?? (match as any).filename ?? (match as any).url ?? notionId)
+    : notionId;
+  return {
+    pageId: notionId,
+    pageUrl: getNotionPageUrl(notionId, title),
+    title
   };
-
-  if (status === "FOUND" && entry?.chosenNotionId) {
-    const notionId = String(entry.chosenNotionId);
-
-    // tenta hidratar title
-    let title: string | undefined = undefined;
-    if (candidatesForHydration?.length) {
-      const match = candidatesForHydration.find((c: any) => c.notion_id === notionId);
-      if (match) title = match.title ?? match.filename ?? match.url ?? match.notion_id;
-    }
-
-    out.found = {
-      pageId: notionId,
-      pageUrl: getNotionPageUrl(notionId, title ?? notionId),
-      title: title ?? notionId
-    };
-  }
-
-  if (status === "AMBIGUOUS") {
-    const pageIds: string[] =
-      (entry?.candidateNotionIds ?? [])
-        .filter(Boolean)
-        .map(String);
-
-    if (pageIds.length) out.ambiguous = { pageIds };
-  }
-
-  return out;
 }
 
 // ─────────────────────────────────────────────────────────────
-// Main
+// MAIN
 // ─────────────────────────────────────────────────────────────
 
 (async () => {
-  // Debug expander base (sempre existe)
+
+  // ── VALIDAÇÃO / REJECTED_404 ─────────────────────────────
+
   const debug: DebugExpander = {
     validation: {
       isValidHttpUrl: Boolean(inputUrl && /^https?:\/\//i.test(inputUrl))
     }
   };
 
-  // Validação mínima (http[s])
   if (!inputUrl || !/^https?:\/\//i.test(inputUrl)) {
     debug.validation.isValidHttpUrl = false;
-    debug.validation.rejected404Reason = "url_not_http";
+    debug.validation.rejected404Reason = 'url_not_http';
 
     const out: AnalyzerJsonOutput = {
       startedAt,
-      inputUrl: inputUrl ?? "",
-      status: "REJECTED_404",
-      phaseResolved: "REJECTED_404",
-      reason: "URL não é http(s)",
+      inputUrl: inputUrl ?? '',
+      status: 'REJECTED_404',
+      phaseResolved: 'REJECTED_404',
+      reason: 'URL não é http(s)',
       debug
     };
-
-    // ✅ urlCache permitido para REJECTED_404 (atalho por URL)
-    try {
-      const snapshot = loadSnapshot("./snapshot.json");
-      const snapshotVersion =
-        snapshot.meta?.version ??
-        String(Object.keys(snapshot.notion_pages ?? {}).length);
-
-      const cache = CacheEngine.load(snapshotVersion);
-
-      const entry = cache.makeDecisionEntry({
-        result: out.status,
-        reason: out.reason ?? "",
-        phaseResolved: toCachePhaseResolved(out.phaseResolved),
-        url: inputUrl ?? ""
-      });
-
-      cache.setUrlDecision(inputUrl ?? "", entry);
-      cache.save();
-    } catch {
-      // se der qualquer ruim no cache, não derruba o app
-    }
 
     emit(out);
     process.exit(0);
   }
 
   try {
-    // ═══════════════════════════════════════════════════════
-    // SNAPSHOT + CACHE INIT
-    // ═══════════════════════════════════════════════════════
-    const snapshot: NotionCacheSnapshot = loadSnapshot("./snapshot.json");
 
+    // ── SNAPSHOT + CACHE INIT (v1) ───────────────────────────
+
+    const snapshot: NotionCacheSnapshot = loadSnapshot('./snapshot.json');
     const snapshotVersion =
       snapshot.meta?.version ??
       String(Object.keys(snapshot.notion_pages ?? {}).length);
 
     const cache = CacheEngine.load(snapshotVersion);
 
-    // ⚡ URL CACHE SHORT-CIRCUIT (somente atalhos por URL)
+    // ⚡ URL CACHE SHORT-CIRCUIT (v1)
     const urlCacheHit = cache.getUrlDecision(inputUrl);
     if (urlCacheHit) {
-      const cachedDebug: DebugExpander = {
-        validation: { isValidHttpUrl: true }
-      };
-
-      const out = decisionEntryToAnalyzerOutput({
-        entry: urlCacheHit,
+      console.log('⚡ URL cache hit');
+      // Hidrata saída tipada a partir da entrada de cache
+      const cachedOut: AnalyzerJsonOutput = {
+        startedAt,
         inputUrl,
-        debug: cachedDebug,
-        meta: { decisionCache: { hit: true, key: "url:" + inputUrl } }
-      });
-
-      emit(out);
+        status: urlCacheHit.result as AnalyzerResultStatus,
+        phaseResolved: urlCacheHit.phaseResolved as PhaseResolved,
+        reason: urlCacheHit.reason,
+        debug,
+        ...(urlCacheHit.chosenNotionId
+          ? { found: hydrateFoundFromCandidates(urlCacheHit.chosenNotionId, []) }
+          : {})
+      };
+      emit(cachedOut);
       process.exit(0);
     }
 
     const notionPages: NotionPage[] = Object.values(snapshot.notion_pages ?? {});
 
-    // ═══════════════════════════════════════════════════════
-    // PHASE 0 — URL lookup exato
-    // ═══════════════════════════════════════════════════════
+    // ── PHASE 0 — URL lookup exato ───────────────────────────
+
     const inputKeys = urlLookupKeys(inputUrl);
 
     const phase0Match = notionPages.find((p) => {
@@ -315,14 +244,15 @@ function decisionEntryToAnalyzerOutput(params: {
     };
 
     if (phase0Match) {
-      const title = phase0Match.title ?? phase0Match.filename ?? phase0Match.url ?? phase0Match.notion_id;
+      const title =
+        phase0Match.title ?? phase0Match.filename ?? phase0Match.url ?? phase0Match.notion_id;
 
       const out: AnalyzerJsonOutput = {
         startedAt,
         inputUrl,
-        status: "FOUND",
-        phaseResolved: "PHASE_0",
-        reason: "Direct URL match in Notion snapshot (Phase 0)",
+        status: 'FOUND',
+        phaseResolved: 'PHASE_0',
+        reason: 'Direct URL match in Notion snapshot (Phase 0)',
         debug,
         found: {
           pageId: phase0Match.notion_id,
@@ -331,25 +261,13 @@ function decisionEntryToAnalyzerOutput(params: {
         }
       };
 
-      // ✅ urlCache permitido (Phase 0)
-      const entry = cache.makeDecisionEntry({
-        result: out.status,
-        reason: out.reason ?? "",
-        phaseResolved: toCachePhaseResolved(out.phaseResolved),
-        url: inputUrl,
-        chosenNotionId: out.found?.pageId
-      });
-
-      cache.setUrlDecision(inputUrl, entry);
-      cache.save();
-
+      persistDecision(cache, inputUrl, out);
       emit(out);
       process.exit(0);
     }
 
-    // ═══════════════════════════════════════════════════════
-    // PHASE 0.5 — Slug match
-    // ═══════════════════════════════════════════════════════
+    // ── PHASE 0.5 — Slug match ───────────────────────────────
+
     const inputSlugData = extractFinalSlug(inputUrl);
     let phase05Match: NotionPage | null = null;
 
@@ -372,14 +290,19 @@ function decisionEntryToAnalyzerOutput(params: {
     };
 
     if (phase05Match) {
-      const title = phase05Match.title ?? phase05Match.filename ?? phase05Match.url ?? phase05Match.notion_id;
+      const snapSlugData = extractFinalSlug(phase05Match.url!);
+      const title =
+        phase05Match.title ?? phase05Match.filename ?? phase05Match.url ?? phase05Match.notion_id;
 
       const out: AnalyzerJsonOutput = {
         startedAt,
         inputUrl,
-        status: "FOUND",
-        phaseResolved: "PHASE_0_5",
-        reason: "Slug match in Notion snapshot (Phase 0.5)",
+        status: 'FOUND',
+        phaseResolved: 'PHASE_0_5',
+        reason:
+          snapSlugData?.domain === inputSlugData?.domain
+            ? 'Slug match (same domain)'
+            : 'Slug match (cross-domain)',
         debug,
         found: {
           pageId: phase05Match.notion_id,
@@ -388,25 +311,13 @@ function decisionEntryToAnalyzerOutput(params: {
         }
       };
 
-      // ✅ urlCache permitido (Phase 0.5)
-      const entry = cache.makeDecisionEntry({
-        result: out.status,
-        reason: out.reason ?? "",
-        phaseResolved: toCachePhaseResolved(out.phaseResolved),
-        url: inputUrl,
-        chosenNotionId: out.found?.pageId
-      });
-
-      cache.setUrlDecision(inputUrl, entry);
-      cache.save();
-
+      persistDecision(cache, inputUrl, out);
       emit(out);
       process.exit(0);
     }
 
-    // ═══════════════════════════════════════════════════════
-    // PHASE 1 — Identity
-    // ═══════════════════════════════════════════════════════
+    // ── PHASE 1 — analyzeUrl → Identity ─────────────────────
+
     const identity: Identity = await analyzeUrl(inputUrl);
 
     debug.phase1 = {
@@ -415,186 +326,190 @@ function decisionEntryToAnalyzerOutput(params: {
       identity
     };
 
-    // ═══════════════════════════════════════════════════════
-    // PHASE 2 — Snapshot fuzzy
-    // ═══════════════════════════════════════════════════════
+        // ── PHASE 2 — fuzzy no snapshot ──────────────────────────
+
     const phase2Result = await searchNotionCache(
       identity,
       snapshot.phase_2_cache?.pages ?? {}
     );
 
-    const phase2Candidates = phase2Result.candidates ?? [];
-    const candidatesCount =
-      typeof (phase2Result.decision as any).phase2Candidates === "number"
-        ? (phase2Result.decision as any).phase2Candidates
-        : phase2Candidates.length;
+    const phase2Candidates: NotionPage[] = phase2Result.candidates ?? [];
 
     debug.phase2 = {
-      candidatesCount,
+      candidatesCount: phase2Candidates.length,
       candidatesTop5: candidatesToDebugTop5(phase2Candidates)
     };
 
-    // ═══════════════════════════════════════════════════════
-    // AI DECISION CACHE (evidence-based short-circuit)
-    // ═══════════════════════════════════════════════════════
-    const policyVersion = "phase3-ai-v1";
+    // Short-circuit: Phase 2 resolveu com confiança
+    if (phase2Result.decision.result === 'FOUND') {
+      const pageId = phase2Result.decision.notionId ?? '';
+      const title = phase2Result.decision.displayName ?? '';
 
-    const evidenceKey = cache.buildEvidenceKey({
-      identity,
-      candidates: phase2Candidates,
-      policyVersion
-    });
-
-    const decisionCacheHit = cache.getDecision(evidenceKey);
-    if (decisionCacheHit) {
-      const out = decisionEntryToAnalyzerOutput({
-        entry: decisionCacheHit,
+      const out: AnalyzerJsonOutput = {
+        startedAt,
         inputUrl,
+        status: 'FOUND',
+        phaseResolved: 'PHASE_2',
+        reason: phase2Result.decision.reason ?? '',
         debug,
-        meta: { aiDecisionCache: { hit: true, key: evidenceKey } },
-        candidatesForHydration: phase2Candidates
-      });
+        found: {
+          pageId,
+          pageUrl: getNotionPageUrl(pageId, title || pageId),
+          title
+        }
+      };
 
+      // URL cache ok aqui (decisão determinística o suficiente)
+      persistDecision(cache, inputUrl, out, undefined, phase2Candidates);
       emit(out);
       process.exit(0);
     }
 
-    // ═══════════════════════════════════════════════════════
-    // Decide (Phase 2 resolve direto) ou tenta IA (Phase 3)
-    // ═══════════════════════════════════════════════════════
-    let finalOut: AnalyzerJsonOutput;
+        // ── PHASE 2.5 — roteamento (agora REAL) ───────────────────
+    // Usa o plano da Phase 2.5 (quando existir) como autoridade:
+    // - DISAMBIGUATE: 2..5 candidatos
+    // - CONFIRM_SINGLE_WEAK: 1 candidato
+    // - SKIP: não chama Phase 3
+    const plan = phase2Result.phase25;
 
-    if (phase2Result.decision.result === "FOUND") {
-      const pageId = phase2Result.decision.notionId ?? "";
-      const title = phase2Result.decision.displayName ?? pageId;
+    // Notinha #1: o conjunto REAL que vai pra Phase 3 também é o que entra no evidenceKey/caches
+    const phase3Candidates: NotionPage[] =
+      plan?.phase3Candidates && plan.phase3Candidates.length > 0
+        ? plan.phase3Candidates
+        : phase2Candidates;
 
-      finalOut = {
-        startedAt,
-        inputUrl,
-        status: "FOUND",
-        phaseResolved: "PHASE_2",
-        reason: phase2Result.decision.reason,
-        debug,
-        found: {
-          pageId,
-          pageUrl: getNotionPageUrl(pageId, title),
-          title
-        }
-      };
-    } else {
-      // PHASE 3 gates (igual seu main atual)
-      const phase2Failed =
-        phase2Result.decision.result === "NOTFOUND" ||
-        phase2Result.decision.result === "AMBIGUOUS";
+    // Corrige erros de tipagem: DebugPhase25 tem shape fixo
+    // Como ainda não implementamos "rescue" de verdade, a regra é sempre SANITY_TOPK aqui.
+    // (Se um dia você fizer fallback top2, aí sim vira FALLBACK_TOP2)
+    debug.phase25 = {
+      candidatesCount: phase3Candidates.length,
+      candidates: candidatesToDebugTop5(phase3Candidates),
+      selectionRule: 'SANITY_TOPK'
+    };
 
-      const hasCandidates = phase2Candidates.length >= 2 && phase2Candidates.length <= 5;
-      const hasValidIdentity = isIdentityValidForAI(identity);
-
-      if (phase2Failed && hasCandidates && hasValidIdentity) {
-        const aiResult = await aiDisambiguate(identity, phase2Candidates);
-
-        debug.phase3 = {
-          mode: "offline",
-          finalCandidates:
-            aiResult.matchedIndex >= 0 && aiResult.confidence >= 0.65
-              ? 1
-              : phase2Candidates.length,
-          finalCandidatePageIds:
-            aiResult.matchedIndex >= 0 && aiResult.confidence >= 0.65
-              ? [String((phase2Candidates[aiResult.matchedIndex] as any).notion_id)]
-              : undefined
-        };
-
-        if (aiResult.matchedIndex >= 0 && aiResult.confidence >= 0.65) {
-          const matched: any = phase2Candidates[aiResult.matchedIndex];
-          const title = matched.title ?? matched.filename ?? matched.url ?? matched.notion_id;
-
-          finalOut = {
-            startedAt,
-            inputUrl,
-            status: "FOUND",
-            phaseResolved: "PHASE_3",
-            reason: `🤖 AI match: ${aiResult.reason} (${(aiResult.confidence * 100).toFixed(0)}%)`,
-            debug,
-            found: {
-              pageId: matched.notion_id,
-              pageUrl: getNotionPageUrl(matched.notion_id, title),
-              title
-            }
-          };
-        } else {
-          // não conseguiu escolher -> mantém AMBIGUOUS da Phase 2 (se for o caso), senão NOTFOUND
-          if (phase2Result.decision.result === "AMBIGUOUS") {
-            finalOut = {
-              startedAt,
-              inputUrl,
-              status: "AMBIGUOUS",
-              phaseResolved: "PHASE_2",
-              reason: phase2Result.decision.reason,
-              debug,
-              ambiguous: {
-                pageIds: phase2Candidates.map((c: any) => String(c.notion_id))
-              }
-            };
-          } else {
-            finalOut = {
-              startedAt,
-              inputUrl,
-              status: "NOTFOUND",
-              phaseResolved: "PHASE_2",
-              reason: phase2Result.decision.reason,
-              debug
-            };
-          }
-        }
-      } else {
-        // sem IA: devolve Phase 2
-        if (phase2Result.decision.result === "AMBIGUOUS") {
-          finalOut = {
-            startedAt,
-            inputUrl,
-            status: "AMBIGUOUS",
-            phaseResolved: "PHASE_2",
-            reason: phase2Result.decision.reason,
-            debug,
-            ambiguous: {
-              pageIds: phase2Candidates.map((c: any) => String(c.notion_id))
-            }
-          };
-        } else {
-          finalOut = {
-            startedAt,
-            inputUrl,
-            status: "NOTFOUND",
-            phaseResolved: "PHASE_2",
-            reason: phase2Result.decision.reason,
-            debug
-          };
-        }
-      }
-    }
-
-    // ═══════════════════════════════════════════════════════
-    // SAVE decisionCache (evidence-based) — SEM urlCache aqui
-    // ═══════════════════════════════════════════════════════
-    const decisionEntry = cache.makeDecisionEntry({
-      result: finalOut.status,
-      reason: finalOut.reason ?? "",
-      phaseResolved: toCachePhaseResolved(finalOut.phaseResolved),
-      url: inputUrl,               // só pra auditoria (urlKey), não é usado na chave
-      evidenceKey,
-      chosenNotionId: finalOut.found?.pageId,
-      candidates: phase2Candidates // vira candidateNotionIds
+    // ── EVIDENCE CACHE SHORT-CIRCUIT (v1) ────────────────────
+    // Notinha #1 (continuação): evidenceKey deve refletir o input REAL da Phase 3 (phase3Candidates)
+    const evidenceKey = cache.buildEvidenceKey({
+      identity,
+      candidates: phase3Candidates,
+      policyVersion: 'phase3-ai-v1'
     });
 
-    cache.setDecision(evidenceKey, decisionEntry);
-    cache.save();
+    const decisionCacheHit = cache.getDecision(evidenceKey);
+    if (decisionCacheHit) {
+      console.log('⚡ Evidence cache hit');
 
-    emit(finalOut);
+      const cachedOut: AnalyzerJsonOutput = {
+        startedAt,
+        inputUrl,
+        status: decisionCacheHit.result as AnalyzerResultStatus,
+        phaseResolved: decisionCacheHit.phaseResolved as PhaseResolved,
+        reason: decisionCacheHit.reason,
+        debug,
+        ...(decisionCacheHit.chosenNotionId
+          ? { found: hydrateFoundFromCandidates(decisionCacheHit.chosenNotionId, phase3Candidates) }
+          : {})
+      };
+
+      emit(cachedOut);
+      process.exit(0);
+    }
+
+    // ── PHASE 3 — AI Disambiguation (STUB → Notion live TODO) ─
+    // [BUG-FIX] gate "NOT_FOUND" → "NOTFOUND"
+    const phase2Failed =
+      phase2Result.decision.result === 'NOTFOUND' ||
+      phase2Result.decision.result === 'AMBIGUOUS';
+
+    const hasValidIdentity = isIdentityValidForAI(identity);
+
+    // Notinha #3: Gate é o Phase 2.5.
+    // Se plan não existir (por segurança), cai no comportamento antigo.
+    const shouldCallPhase3 =
+      plan?.shouldCallPhase3 ??
+      (phase3Candidates.length >= 2 && phase3Candidates.length <= 5);
+
+    if (phase2Failed && shouldCallPhase3 && hasValidIdentity) {
+      console.log('\n🤖 [Phase 3] All gates passed (via Phase 2.5), attempting AI disambiguation...');
+
+      // Notinha #2: aiDisambiguate precisa aceitar 1 candidato — o seu já aceita ✅
+      const aiResult = await aiDisambiguate(identity, phase3Candidates);
+
+      debug.phase3 = {
+        mode: 'offline', // TODO: trocar para 'online' quando implementar Notion live
+        finalCandidates:
+          aiResult.matchedIndex >= 0 && aiResult.confidence >= 0.65
+            ? 1
+            : phase3Candidates.length,
+        finalCandidatePageIds:
+          aiResult.matchedIndex >= 0 && aiResult.confidence >= 0.65
+            ? [String((phase3Candidates[aiResult.matchedIndex] as any).notion_id)]
+            : undefined
+      };
+
+      if (aiResult.matchedIndex >= 0 && aiResult.confidence >= 0.65) {
+        const matched: any = phase3Candidates[aiResult.matchedIndex];
+        const title = matched.title ?? matched.filename ?? matched.url ?? matched.notion_id;
+        const reason = `AI match: ${aiResult.reason} (${(aiResult.confidence * 100).toFixed(0)}%)`;
+
+        const out: AnalyzerJsonOutput = {
+          startedAt,
+          inputUrl,
+          status: 'FOUND',
+          phaseResolved: 'PHASE_3',
+          reason,
+          debug,
+          found: {
+            pageId: matched.notion_id,
+            pageUrl: getNotionPageUrl(matched.notion_id, title),
+            title
+          }
+        };
+
+        // Notinha #1 (final): persistDecision deve usar o MESMO conjunto do evidenceKey/Phase3
+        persistDecision(cache, inputUrl, out, evidenceKey, phase3Candidates);
+        emit(out);
+        process.exit(0);
+      }
+    }
+    // ── SAÍDA FINAL — não resolveu ────────────────────────────
+
+    if (phase2Result.decision.result === 'AMBIGUOUS') {
+      const out: AnalyzerJsonOutput = {
+        startedAt,
+        inputUrl,
+        status: 'AMBIGUOUS',
+        phaseResolved: 'PHASE_2',
+        reason: phase2Result.decision.reason ?? '',
+        debug,
+        ambiguous: {
+          pageIds: phase2Candidates.map((c: any) => String(c.notion_id))
+        }
+      };
+
+      persistDecision(cache, inputUrl, out, evidenceKey, phase3Candidates);
+      emit(out);
+      process.exit(0);
+    }
+
+    // NOTFOUND
+    const out: AnalyzerJsonOutput = {
+      startedAt,
+      inputUrl,
+      status: 'NOTFOUND',
+      phaseResolved: 'PHASE_2',
+      reason: phase2Result.decision.reason ?? '',
+      debug
+    };
+
+    persistDecision(cache, inputUrl, out, evidenceKey, phase3Candidates);
+    emit(out);
     process.exit(0);
+
   } catch (err) {
-    console.error("\n❌ Erro fatal:");
+    console.error('\n❌ Erro fatal:');
     console.error(err);
     process.exit(1);
   }
+
 })();

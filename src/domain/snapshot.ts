@@ -27,13 +27,13 @@ export interface Snapshot {
 // ═══════════════════════════════════════════════════════════
 
 export interface NotionPage {
-  notionid: string;
+  notion_id: string;
   url: string;
   title: string | null;
   filename: string | null;
   creator: string | null;
-  createdtime: string;
-  lasteditedtime: string;
+  created_time: string;
+  last_edited_time: string;
   // Campos opcionais usados na Phase 2 para scoring
   _score?: number;
   _reasons?: string[];

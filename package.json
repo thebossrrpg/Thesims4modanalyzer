@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/main.js",
+    "start": "node dist/src/main.js",
     "pull:notionsync": "node scripts/fetchAnalyzerNotionSync.mjs",
     "merge:notion": "node --loader ts-node/esm --no-warnings scripts/mergeNotionPagesIntoSnapshot.ts"
   },

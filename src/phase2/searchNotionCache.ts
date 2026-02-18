@@ -17,7 +17,11 @@ export async function searchNotionCache(
   const candidates: NotionPage[] = [];
   
   // ========== EXTRAÇÃO DE IDENTIDADE ==========
-  const searchTitle = identity.pageTitle || identity.ogTitle || '';
+  const searchTitle =
+  identity.pageTitle ||
+  identity.ogTitle ||
+  identity.urlSlug ||
+  '';
   const searchCreator = identity.ogSite || '';
   const searchDomain = identity.domain;
   const searchSlug = identity.urlSlug;
@@ -68,7 +72,7 @@ export async function searchNotionCache(
           result: 'FOUND',
           phaseResolved: 'PHASE_2',
           reason: `🎯 Exact name match: "${searchTitle}" ≈ "${notionTitle}"`,
-          notionId: page.notionid,
+          notionId: page.notion_id,
           notionUrl: page.url,
           displayName: notionTitle
         }
@@ -117,17 +121,24 @@ export async function searchNotionCache(
       }
     }
     
-    // --- 3. SLUG (peso 15%) ---
-    if (searchSlug && notionTitle) {
-      const slugSimilarity = calculateSimilarity(
-        normalizeTitle(searchSlug),
-        normalizeTitle(notionTitle)
-      );
-      score += slugSimilarity * 0.15;
-      if (slugSimilarity > 0.5) {
-        reasons.push(`slug:${(slugSimilarity * 100).toFixed(0)}%`);
-      }
+    // --- 3. SLUG (peso 20% via token overlap) ---
+if (searchSlug && notionTitle) {
+  const slugTokens = tokenize(searchSlug);
+  const notionTokens = tokenize(notionTitle);
+
+  const overlap = intersectionSize(slugTokens, notionTokens);
+  const union = unionSize(slugTokens, notionTokens);
+
+  if (union > 0) {
+    const slugTokenScore = overlap / union;
+
+    if (slugTokenScore > 0.5) {
+      score += slugTokenScore * 0.20;
+      reasons.push(`slugTokens:${(slugTokenScore * 100).toFixed(0)}%`);
     }
+  }
+}
+
     
     // --- 4. DOMÍNIO (peso 5%, bonus) ---
     if (searchDomain && page.url) {
@@ -139,7 +150,7 @@ export async function searchNotionCache(
     }
     
     // Adiciona candidato se score mínimo atingido
-    if (score > 0.30) {
+    if (score > 0.28) {
       const candidateWithMeta = { 
         ...page, 
         _score: score, 
@@ -186,7 +197,7 @@ export async function searchNotionCache(
           result: 'FOUND',
           phaseResolved: 'PHASE_2',
           reason: `🎯 Fuzzy match (score:${(bestScore * 100).toFixed(0)}%, gap:${(gap * 100).toFixed(0)}%) → ${(best as any)._reasons?.join(', ')}`,
-          notionId: best.notionid,
+          notionId: best.notion_id,
           notionUrl: best.url,
           displayName: best.title || best.filename || 'Unknown',
           phase2Candidates: candidates.length
@@ -228,14 +239,26 @@ function normalizeTitle(title: string): string {
  * Tokeniza string: quebra em palavras >= 3 chars, remove stopwords
  */
 function tokenize(text: string): Set<string> {
-  const stopwords = new Set(['the', 'and', 'for', 'with', 'mod', 'pack', 'set']);
-  
+  const stopwords = new Set([
+    'the', 'and', 'for', 'with',
+    'mod', 'mods',
+    'pack', 'set',
+    'addon', 'add-on',
+    'download',
+    'sims', 'sims4',
+    'cc'
+  ]);
+
   return new Set(
     normalizeTitle(text)
-      .split(/\s+/)
-      .filter(token => token.length >= 3 && !stopwords.has(token))
+      .split(/[\s\-_/]+/) // ← separa também por hífen
+      .filter(token =>
+        token.length >= 3 &&
+        !stopwords.has(token)
+      )
   );
 }
+
 
 /**
  * Tamanho da interseção entre dois Sets

@@ -30,10 +30,15 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import {
+  canonicalizeUrlKey,
   ensureCacheDir,
   safeReadJson,
   atomicWriteJson,
-} from '../utils/cacheIo.js';
+  safeUnlink,
+  isExpired,
+  nowMs,
+  CACHE_DIR,
+} from "./cacheIo.js";
 
 import type { Identity } from "../domain/identity.js";
 import type { NotionPage } from "../domain/snapshot.js";
@@ -227,15 +232,20 @@ export class CacheEngine {
 
   // ---- URL Cache (Phase 0/0.5 e REJECTED_404) ----
 
-  getUrlDecision(url: string): UrlCacheEntry | null {
-    const key = getUrlKey(url);
-    return this.cache.urlCache[key] ?? null;
-  }
+getUrlDecision(rawUrl: string) {
+  const key = canonicalizeUrlKey(rawUrl);
+  if (!key) return null;
+  return this.cache.urlCache[key] ?? null;
+}
 
-  setUrlDecision(url: string, entry: UrlCacheEntry): void {
-    const key = getUrlKey(url);
-    this.cache.urlCache[key] = { ...entry, urlKey: key };
-  }
+setUrlDecision(rawUrl: string, entry: DecisionEntry) {
+  const key = canonicalizeUrlKey(rawUrl);
+  if (!key) return;
+  this.cache.urlCache[key] = {
+    ...entry,
+    urlKey: key, // importante: armazenar o key canônico
+  };
+}
 
   // ---- Notion Page Cache (Phase 3 live) ----
   // A lógica:

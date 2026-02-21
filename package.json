@@ -1,6 +1,6 @@
 {
   "name": "thesims4modanalyzer",
-  "version": "1.0.7-beta.1",
+  "version": "1.1.0-beta.2",
   "type": "module",
   "scripts": {
     "build": "tsc",

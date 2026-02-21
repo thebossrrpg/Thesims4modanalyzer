@@ -14,3 +14,11 @@
   },
   "include": ["src/**/*"]
 }
+
+{
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"]
+  }
+}

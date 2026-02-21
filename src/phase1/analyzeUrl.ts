@@ -7,6 +7,7 @@
 // 5. tryLocalOgs() / tryOgWebApi() com try/catch
 // 6. isSuspiciousTitle() para forçar unfurl
 
+import 'dotenv/config';
 import ogs from "open-graph-scraper";
 import fs from "node:fs";
 import path from "node:path";
@@ -29,7 +30,6 @@ const REQUEST_HEADERS = {
 
 // ✅ CORRETO — tudo em UMA linha
 const BLOCKED_PATTERNS = /just a moment|cloudflare|access denied|checking your browser|challenge-platform|cf-browser-verification|cf-chl|js-challenge|scumbumbo/i;
-
 
 const providerState: Record<ProviderKey, { blockedUntilMs: number }> = {
   ogWebApi: { blockedUntilMs: 0 },
@@ -375,29 +375,23 @@ async function tryLocalOgs(url: string): Promise<UnfurlMeta | null> {
   }
 }
 
+// ✅ NOVO — OpenGraph.xyz (entre LocalOgs e Iframely)
 async function tryOpenGraphXyz(url: string): Promise<UnfurlMeta | null> {
   try {
-    const appId = String(process.env.OPENGRAPH_APP_ID ?? "").trim();
-    if (!appId) return null;
+    const ogUrl = `https://www.opengraph.xyz/url/${encodeURIComponent(url)}`;
+    const html = await fetchHtml(ogUrl);
+    if (!html) return null;
 
-    const endpoint = `https://opengraph.io/api/1.1/site/${encodeURIComponent(url)}?app_id=${encodeURIComponent(appId)}`;
-    const res = await fetch(endpoint, { method: "GET", headers: REQUEST_HEADERS });
-
-    if (!res.ok) return null;
-    const data = await res.json();
-
-    const g =
-      data?.hybridGraph ??
-      data?.openGraph ??
-      data?.htmlInferred ??
-      null;
-
-    const title = g?.title ?? data?.title ?? null;
-    const ogSite = g?.site_name ?? g?.siteName ?? data?.site_name ?? data?.siteName ?? null;
+    const title = extractMetaContent(html, "og:title") ?? extractTitle(html);
+    const ogSite = extractMetaContent(html, "og:site_name") ?? null;
 
     const meta = normalizeMeta(
-      { title, ogTitle: title, ogSite },
-      ("opengraph_xyz" as unknown as UnfurlVia)
+      {
+        title,
+        ogTitle: title,
+        ogSite
+      },
+      "fallback" as const
     );
 
     return isUsefulMeta(meta) ? meta : null;
@@ -406,10 +400,12 @@ async function tryOpenGraphXyz(url: string): Promise<UnfurlMeta | null> {
   }
 }
 
-// src/phase1/analyzeUrl.ts — tryIframely
+// src/phase1/analyzeUrl.ts — tryIframely (COM API KEY)
 async function tryIframely(url: string): Promise<UnfurlMeta | null> {
   try {
-    const apiKey = String(process.env.IFRAMELY_API_KEY ?? "undefined").trim();
+    const apiKey = String(process.env.IFRAMELY_API_KEY ?? "").trim();
+    if (!apiKey) return null;
+
     const res = await fetch(`https://iframely.io/?url=${encodeURIComponent(url)}&api_key=${encodeURIComponent(apiKey)}`);
     if (!res.ok) {
       console.log(`❌ Iframely ${res.status}`);
@@ -433,27 +429,41 @@ async function tryIframely(url: string): Promise<UnfurlMeta | null> {
   }
 }
 
+// ✅ NOVO — Microlink (depois do Iframely)
+// Integração via parâmetros meta.* (conforme docs)
 async function tryMicrolink(url: string): Promise<UnfurlMeta | null> {
   try {
-    const apiKey = String(process.env.MICROLINK_API_KEY ?? "").trim();
-    const headers: Record<string, string> = { ...REQUEST_HEADERS };
-    if (apiKey) headers["x-api-key"] = apiKey;
+    const base = "https://api.microlink.io/";
+    const params = new URLSearchParams();
+    params.set("url", url);
 
-    const res = await fetch(`https://api.microlink.io/?url=${encodeURIComponent(url)}`, {
+    // meta via parâmetros (docs): pede só o que a gente usa
+    params.set("meta.title", "true");
+    params.set("meta.publisher", "true");
+
+    // opcional: endpoint proxy (para plano/API key), se você usar isso
+    const endpoint = String(process.env.MICROLINK_ENDPOINT ?? "").trim();
+    if (endpoint) params.set("endpoint", endpoint);
+
+    const res = await fetch(`${base}?${params.toString()}`, {
       method: "GET",
-      headers
+      headers: REQUEST_HEADERS
     });
-
     if (!res.ok) return null;
+
     const json = await res.json();
     const data = json?.data ?? null;
 
     const title = data?.title ?? null;
-    const ogSite = data?.publisher ?? data?.author ?? null;
+    const ogSite = data?.publisher ?? null;
 
     const meta = normalizeMeta(
-      { title, ogTitle: title, ogSite },
-      ("microlink" as unknown as UnfurlVia)
+      {
+        title,
+        ogTitle: title,
+        ogSite
+      },
+      "fallback" as const
     );
 
     return isUsefulMeta(meta) ? meta : null;
@@ -466,7 +476,9 @@ async function unfurlBlocked(url: string): Promise<UnfurlMeta | null> {
   const cached = getCachedUnfurl(url);
   if (cached) return cached;
 
-  // Cadeia expandida: ogWebApi → localOgs → OpenGraph.xyz → iframely → microlink
+  // Ordem pedida:
+  // 1) OgWebApi → 2) LocalOgs → 3) OpenGraph.xyz → 4) Iframely (com API key) → 5) Microlink
+
   if (canTry("ogWebApi")) {
     const meta = await tryOgWebApi(url);
     if (meta) {

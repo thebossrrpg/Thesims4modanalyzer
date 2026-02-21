@@ -152,3 +152,4 @@ Sem caos.
 ---
 
 ✨ Projeto pessoal focado em organização, precisão e automação, criado por Akin (@UnpaidSimmer).
+# v1.1.1

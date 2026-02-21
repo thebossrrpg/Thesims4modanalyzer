@@ -21,25 +21,9 @@ type ScoredNotionPage = NotionPage & {
   _reasons: string[];
 };
 
-export interface Phase2_5Plan {
-  shouldCallPhase3: boolean;
-  mode: "DISAMBIGUATE" | "CONFIRM_SINGLE_WEAK" | "SKIP";
-  reason: string;
-
-  // sempre no máximo 5, já pronto pro Phase 3 (Notion live por notion_id)
-  phase3Candidates: NotionPage[];
-
-  // debug/telemetria
-  bestScore: number;
-  secondBestScore: number;
-  gap: number;
-  totalCandidatesScored: number;
-}
-
 export interface Phase2Result {
   decision: Decision;
-  candidates?: NotionPage[];
-  phase25?: Phase2_5Plan;
+  candidates: NotionPage[]; // nunca undefined agora
 }
 
 const THRESHOLD_FOUND = 0.48;     // match alto o suficiente pra FOUND direto
@@ -74,13 +58,8 @@ export async function searchNotionCache(
   // Guard: sem título, impossível buscar
   if (!searchTitle) {
     return {
-      decision: {
-        result: "NOTFOUND",
-        phaseResolved: "PHASE_2",
-        reason: "❌ No title available for matching (pageTitle and ogTitle both empty)",
-      },
+      decision: { result: "NOTFOUND", phaseResolved: "PHASE_2", reason: "..." },
       candidates: [],
-      phase25: buildPhase25Plan([], 0, 0, 0),
     };
   }
 
@@ -129,7 +108,6 @@ export async function searchNotionCache(
       return {
         decision: immediateDecision,
         candidates: [page],
-        phase25: buildPhase25Plan([page], 1.0, 0, 1),
       };
     }
 
@@ -238,7 +216,6 @@ export async function searchNotionCache(
       return {
         decision,
         candidates: top5,
-        phase25: buildPhase25Plan(top5, bestScore, secondBestScore, candidates.length),
       };
     }
 
@@ -257,7 +234,6 @@ export async function searchNotionCache(
     return {
       decision,
       candidates: top5,
-      phase25: buildPhase25Plan(top5, bestScore, secondBestScore, candidates.length),
     };
   }
 
@@ -274,7 +250,6 @@ export async function searchNotionCache(
   return {
     decision,
     candidates: top5,
-    phase25: buildPhase25Plan(top5, bestScore, secondBestScore, candidates.length),
   };
 }
 
@@ -282,66 +257,7 @@ export async function searchNotionCache(
 // PHASE 2.5 (planejamento pro Phase 3)
 // -------------------------
 
-function buildPhase25Plan(
-  topCandidates: NotionPage[],
-  bestScore: number,
-  secondBestScore: number,
-  totalCandidatesScored: number
-): Phase2_5Plan {
-  const gap = bestScore - secondBestScore;
 
-  if (topCandidates.length === 0) {
-    return {
-      shouldCallPhase3: false,
-      mode: "SKIP",
-      reason: "No candidates available to confirm/desambiguate.",
-      phase3Candidates: [],
-      bestScore,
-      secondBestScore,
-      gap,
-      totalCandidatesScored,
-    };
-  }
-
-  // 1 candidato, mas fraco => confirmar no Notion live
-  if (topCandidates.length === 1 && bestScore < THRESHOLD_FOUND) {
-    return {
-      shouldCallPhase3: true,
-      mode: "CONFIRM_SINGLE_WEAK",
-      reason: "Single weak candidate: confirm against Notion live by notion_id.",
-      phase3Candidates: topCandidates,
-      bestScore,
-      secondBestScore,
-      gap,
-      totalCandidatesScored,
-    };
-  }
-
-  // 2..5 candidatos => desambiguar
-  if (topCandidates.length >= 2 && topCandidates.length <= 5) {
-    return {
-      shouldCallPhase3: true,
-      mode: "DISAMBIGUATE",
-      reason: "Multiple candidates: disambiguate using Notion live (by notion_id).",
-      phase3Candidates: topCandidates,
-      bestScore,
-      secondBestScore,
-      gap,
-      totalCandidatesScored,
-    };
-  }
-
-  return {
-    shouldCallPhase3: false,
-    mode: "SKIP",
-    reason: "Unexpected candidate count after TOP5 cut.",
-    phase3Candidates: topCandidates.slice(0, 5),
-    bestScore,
-    secondBestScore,
-    gap,
-    totalCandidatesScored,
-  };
-}
 
 // -------------------------
 // FUNÇÕES AUXILIARES

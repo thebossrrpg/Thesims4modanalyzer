@@ -26,12 +26,18 @@
 //
 // ---------------------------------------------------------
 
-import fs from "fs";
-import path from "path";
-import crypto from "crypto";
+import fs from 'fs';
+import path from 'path';
+import crypto from 'crypto';
+import {
+  ensureCacheDir,
+  safeReadJson,
+  atomicWriteJson,
+} from '../utils/cacheIo.js';
 
 import type { Identity } from "../domain/identity.js";
 import type { NotionPage } from "../domain/snapshot.js";
+import type { PhaseResolved } from "../domain/analyzerJsonOutput.js";
 
 // -------------------------
 // Tipos
@@ -42,13 +48,11 @@ export type AnalyzerResult = "FOUND" | "AMBIGUOUS" | "NOTFOUND" | "REJECTED_404"
 export type DecisionEntry = {
   result: AnalyzerResult;
   reason: string;
-  phaseResolved: string; // ex: "phase0", "phase2", "phase3"
+  phaseResolved: PhaseResolved;   // era: string
   timestamp: number;
 
-  // Debug/auditoria:
   urlKey?: string;
   evidenceKey?: string;
-
   chosenNotionId?: string;
   candidateNotionIds?: string[];
 };
@@ -81,27 +85,14 @@ export type CacheV2 = {
 // Arquivo em disco
 // -------------------------
 
-const CACHE_DIR = path.resolve(process.cwd(), ".cache");
-const CACHE_FILE = path.join(CACHE_DIR, "lookup-cache.v2.json");
+const CACHEDIR = path.resolve(process.cwd(), ".cache");
+const CACHEFILE = path.join(CACHEDIR, "lookup-cache.v2.json");
 
-function ensureCacheDir() {
-  fs.mkdirSync(CACHE_DIR, { recursive: true });
+// SUBSTITUI safeWriteJson por atomicWriteJson onde for usado:
+function safeWriteJson(filePath: string, data: unknown): void {
+  atomicWriteJson(filePath, data);
 }
 
-function safeReadJson(filePath: string): unknown | null {
-  try {
-    if (!fs.existsSync(filePath)) return null;
-    const raw = fs.readFileSync(filePath, "utf-8");
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-function safeWriteJson(filePath: string, data: unknown) {
-  ensureCacheDir();
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
-}
 
 function isCacheV2(x: any): x is CacheV2 {
   return (
@@ -191,7 +182,7 @@ export class CacheEngine {
   static load(snapshotVersion?: string): CacheEngine {
     ensureCacheDir();
 
-    const raw = safeReadJson(CACHE_FILE);
+    const raw = safeReadJson(CACHEFILE);
     if (!raw || !isCacheV2(raw)) {
       const fresh: CacheV2 = {
         version: 2,
@@ -226,7 +217,7 @@ export class CacheEngine {
   }
 
   save(): void {
-    safeWriteJson(CACHE_FILE, this.cache);
+    safeWriteJson(CACHEFILE, this.cache);
   }
 
   // Útil pra debug/teste
@@ -367,7 +358,7 @@ export class CacheEngine {
   makeDecisionEntry(params: {
     result: AnalyzerResult;
     reason: string;
-    phaseResolved: string;
+    phaseResolved: PhaseResolved;   // era: string
     url?: string;
     evidenceKey?: string;
     chosenNotionId?: string;

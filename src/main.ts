@@ -1,30 +1,45 @@
-// src/main.ts — v1.1.0-merged
+// src/main.ts — v1.2.0
 //
-// ┌─ Do v1 → CacheEngine (URL cache + evidence-based cache), persistDecision
-// └─ Do v2 → AnalyzerJsonOutput tipado, DebugExpander por fase, emit(),
-//            contrato de saídas estruturado (FOUND / AMBIGUOUS / NOTFOUND / REJECTED_404)
-//
-// [BUG-FIX] Gate Phase 3: "NOT_FOUND" → "NOTFOUND"
-// [STUB]    Phase 2.5 — roteamento correto, implementação pendente
-// [STUB]    Phase 3   — Notion live por pageId pendente (AI stub mantido)
+// [FIX-4a] Phase 1 hard 404 → REJECTED_404 estruturado (inner try/catch)
+// [FIX-4b] AiDecisionCache integrado; persistDecision respeita regra determinística
+// [FIX]    mapUnfurlViaToProvider, candidatesToDebugTop5 → importados de debug.ts
+// [FIX]    createBaseDebug / setRejected404 → importados de debug.ts
+// [FIX]    snapshotVersion → buildSnapshotVersion(snapshot)
+// [FIX]    POLICY_VERSION como constante explícita
 
 import { analyzeUrl } from './phase1/analyzeUrl.js';
 import { searchNotionCache } from './phase2/searchNotionCache.js';
 import { aiDisambiguate, isIdentityValidForAI } from './phase3/aiDisambiguate.js';
 import { getNotionPageUrl } from './utils/notion.js';
 import { CacheEngine } from './utils/cacheEngine.js';
+import { AiDecisionCache } from './cache/aiDecisionCache.js';
+import { phase25Rescue } from './phase2/phase25Rescue.js';
+import {
+  buildPhase25Debug,
+  buildPhase3Debug,
+  mapUnfurlViaToProvider,
+  candidatesToDebugTop5,
+  createBaseDebug,
+  setRejected404,
+} from './utils/debug.js';
+import { buildSnapshotVersion } from './utils/snapshotVersion.js';
+
 import fs from 'fs';
 
 import type { NotionCacheSnapshot, NotionPage } from './domain/snapshot.js';
-import type { Identity, UnfurlVia } from './domain/identity.js';
+import type { Identity } from './domain/identity.js';
 import type {
   AnalyzerJsonOutput,
   DebugExpander,
-  ProviderUsed,
-  CandidateDebug,
   AnalyzerResultStatus,
-  PhaseResolved
+  PhaseResolved,
 } from './domain/analyzerJsonOutput.js';
+
+// ─────────────────────────────────────────────────────────────
+// CONSTANTES
+// ─────────────────────────────────────────────────────────────
+
+const POLICY_VERSION = 'phase3-ai-v1';
 
 // ─────────────────────────────────────────────────────────────
 // ARGS
@@ -73,8 +88,8 @@ function printHumanSummary(out: AnalyzerJsonOutput): void {
 // HELPERS — snapshot / Phase 0 / 0.5
 // ─────────────────────────────────────────────────────────────
 
-function loadSnapshot(path: string): NotionCacheSnapshot {
-  const raw = fs.readFileSync(path, 'utf-8');
+function loadSnapshot(snapshotPath: string): NotionCacheSnapshot {
+  const raw = fs.readFileSync(snapshotPath, 'utf-8');
   return JSON.parse(raw) as NotionCacheSnapshot;
 }
 
@@ -104,37 +119,29 @@ function extractFinalSlug(rawUrl: string): { slug: string; domain: string } | nu
 }
 
 // ─────────────────────────────────────────────────────────────
-// HELPERS — debug
+// HELPERS — cache
 // ─────────────────────────────────────────────────────────────
 
-function mapUnfurlViaToProvider(via: UnfurlVia): ProviderUsed {
-  switch (via) {
-    case 'og_web_scraper': return 'html';
-    case 'local_ogs':      return 'localOgs';
-    case 'iframely':       return 'iframely';
-    default:               return 'html';
-  }
-}
-
-function candidatesToDebugTop5(candidates: NotionPage[]): CandidateDebug[] {
-  return candidates.slice(0, 5).map((c: any) => ({
-    title: (c.title ?? c.filename ?? c.url ?? 'Unknown') as string,
-    pageId: (c.notion_id ?? '') as string,
-    score: typeof c._score === 'number' ? c._score : 0
-  }));
-}
-
-// ─────────────────────────────────────────────────────────────
-// HELPERS — cache (v1)
-// ─────────────────────────────────────────────────────────────
-
+/**
+ * Persiste decisão nos caches corretos conforme a fase:
+ * - URL cache   → apenas fases determinísticas (PHASE_0, PHASE_0_5, REJECTED_404)
+ * - Evidence    → quando há evidenceKey (Phase 2/3)
+ * - AiCache     → redundância para Phase 3 (por evidenceKey)
+ */
 function persistDecision(
   cache: CacheEngine,
+  aiCache: AiDecisionCache,
   url: string,
   out: AnalyzerJsonOutput,
   evidenceKey?: string,
-  candidates?: NotionPage[]
+  candidates?: NotionPage[],
+  aiConfidence?: number
 ): void {
+  const isDeterministic =
+    out.phaseResolved === 'REJECTED_404' ||
+    out.phaseResolved === 'PHASE_0' ||
+    out.phaseResolved === 'PHASE_0_5';
+
   const entry = cache.makeDecisionEntry({
     result: out.status,
     reason: out.reason ?? '',
@@ -142,10 +149,26 @@ function persistDecision(
     url,
     evidenceKey,
     chosenNotionId: out.found?.pageId,
-    candidates: candidates ?? []
+    candidates: candidates ?? [],
   });
-  cache.setUrlDecision(url, entry);
-  if (evidenceKey) cache.setDecision(evidenceKey, entry);
+
+  if (isDeterministic) {
+    cache.setUrlDecision(url, entry);
+  }
+
+  if (evidenceKey) {
+    cache.setDecision(evidenceKey, entry);
+
+    aiCache.set(evidenceKey, {
+      result: out.status,
+      phaseResolved: out.phaseResolved,
+      reason: out.reason ?? '',
+      chosenNotionId: out.found?.pageId,
+      confidence: aiConfidence,
+    });
+    aiCache.save();
+  }
+
   cache.save();
 }
 
@@ -155,12 +178,12 @@ function hydrateFoundFromCandidates(
 ): { pageId: string; pageUrl?: string; title: string } {
   const match = candidates.find((c: any) => c.notion_id === notionId);
   const title = match
-    ? ((match as any).title ?? (match as any).filename ?? (match as any).url ?? notionId)
-    : notionId;
+    ? String((match as any).title ?? (match as any).filename ?? (match as any).url ?? notionId)
+    : String(notionId);
   return {
     pageId: notionId,
     pageUrl: getNotionPageUrl(notionId, title),
-    title
+    title,
   };
 }
 
@@ -172,15 +195,10 @@ function hydrateFoundFromCandidates(
 
   // ── VALIDAÇÃO / REJECTED_404 ─────────────────────────────
 
-  const debug: DebugExpander = {
-    validation: {
-      isValidHttpUrl: Boolean(inputUrl && /^https?:\/\//i.test(inputUrl))
-    }
-  };
+  const debug: DebugExpander = createBaseDebug(inputUrl);
 
   if (!inputUrl || !/^https?:\/\//i.test(inputUrl)) {
-    debug.validation.isValidHttpUrl = false;
-    debug.validation.rejected404Reason = 'url_not_http';
+    setRejected404(debug, 'url_not_http');
 
     const out: AnalyzerJsonOutput = {
       startedAt,
@@ -188,7 +206,7 @@ function hydrateFoundFromCandidates(
       status: 'REJECTED_404',
       phaseResolved: 'REJECTED_404',
       reason: 'URL não é http(s)',
-      debug
+      debug,
     };
 
     emit(out);
@@ -197,20 +215,19 @@ function hydrateFoundFromCandidates(
 
   try {
 
-    // ── SNAPSHOT + CACHE INIT (v1) ───────────────────────────
+    // ── SNAPSHOT + CACHE INIT ────────────────────────────────
 
     const snapshot: NotionCacheSnapshot = loadSnapshot('./snapshot.json');
-    const snapshotVersion =
-      snapshot.meta?.version ??
-      String(Object.keys(snapshot.notion_pages ?? {}).length);
+    const snapshotVersion = buildSnapshotVersion(snapshot);
 
     const cache = CacheEngine.load(snapshotVersion);
+    const aiCache = AiDecisionCache.load(snapshotVersion, POLICY_VERSION);
 
-    // ⚡ URL CACHE SHORT-CIRCUIT (v1)
+    // ⚡ URL CACHE SHORT-CIRCUIT (determinístico)
     const urlCacheHit = cache.getUrlDecision(inputUrl);
     if (urlCacheHit) {
       console.log('⚡ URL cache hit');
-      // Hidrata saída tipada a partir da entrada de cache
+
       const cachedOut: AnalyzerJsonOutput = {
         startedAt,
         inputUrl,
@@ -218,21 +235,28 @@ function hydrateFoundFromCandidates(
         phaseResolved: urlCacheHit.phaseResolved as PhaseResolved,
         reason: urlCacheHit.reason,
         debug,
+        meta: {
+          decisionCache: { hit: true, key: urlCacheHit.urlKey },
+        },
         ...(urlCacheHit.chosenNotionId
           ? { found: hydrateFoundFromCandidates(urlCacheHit.chosenNotionId, []) }
-          : {})
+          : {}),
       };
+
       emit(cachedOut);
       process.exit(0);
     }
 
-    const notionPages: NotionPage[] = Object.values(snapshot.notion_pages ?? {});
+    const notionPages: Record<string, NotionPage> = {
+      ...(snapshot.notion_pages ?? {}),
+      ...(snapshot.phase_2_cache?.pages ?? {}),
+    };
 
     // ── PHASE 0 — URL lookup exato ───────────────────────────
 
     const inputKeys = urlLookupKeys(inputUrl);
 
-    const phase0Match = notionPages.find((p) => {
+    const phase0Match = Object.values(notionPages).find((p) => {
       if (!p.url) return false;
       const pKeys = urlLookupKeys(p.url);
       return pKeys.some((k) => inputKeys.includes(k));
@@ -240,7 +264,7 @@ function hydrateFoundFromCandidates(
 
     debug.phase0 = {
       exactMatch: Boolean(phase0Match),
-      matchedPageId: phase0Match?.notion_id
+      matchedPageId: phase0Match?.notion_id,
     };
 
     if (phase0Match) {
@@ -257,11 +281,11 @@ function hydrateFoundFromCandidates(
         found: {
           pageId: phase0Match.notion_id,
           pageUrl: getNotionPageUrl(phase0Match.notion_id, title),
-          title
-        }
+          title,
+        },
       };
 
-      persistDecision(cache, inputUrl, out);
+      persistDecision(cache, aiCache, inputUrl, out);
       emit(out);
       process.exit(0);
     }
@@ -272,7 +296,7 @@ function hydrateFoundFromCandidates(
     let phase05Match: NotionPage | null = null;
 
     if (inputSlugData) {
-      const slugMatches = notionPages.filter((p) => {
+      const slugMatches = Object.values(notionPages).filter((p) => {
         if (!p.url) return false;
         const snapSlug = extractFinalSlug(p.url);
         if (!snapSlug) return false;
@@ -286,7 +310,7 @@ function hydrateFoundFromCandidates(
 
     debug.phase05 = {
       slugMatch: Boolean(phase05Match),
-      matchedPageId: phase05Match?.notion_id
+      matchedPageId: phase05Match?.notion_id,
     };
 
     if (phase05Match) {
@@ -307,37 +331,67 @@ function hydrateFoundFromCandidates(
         found: {
           pageId: phase05Match.notion_id,
           pageUrl: getNotionPageUrl(phase05Match.notion_id, title),
-          title
-        }
+          title,
+        },
       };
 
-      persistDecision(cache, inputUrl, out);
+      persistDecision(cache, aiCache, inputUrl, out);
       emit(out);
       process.exit(0);
     }
 
     // ── PHASE 1 — analyzeUrl → Identity ─────────────────────
+    // [FIX-4a] Hard 404 capturado aqui → REJECTED_404 estruturado
+    //          Erros reais de rede/parse são re-lançados → catch externo → exit 1
 
-    const identity: Identity = await analyzeUrl(inputUrl);
+    let identity: Identity;
+
+    try {
+      identity = await analyzeUrl(inputUrl);
+    } catch (phase1Err: any) {
+      const msg = String(phase1Err?.message ?? '');
+      const is404 =
+        msg.toLowerCase().includes('404') ||
+        msg.toLowerCase().includes('não retornou') ||
+        msg.toLowerCase().includes('page not found') ||
+        msg.toLowerCase().includes('not found');
+
+      if (!is404) {
+        // Erro inesperado → propaga para o catch externo (exit 1)
+        throw phase1Err;
+      }
+
+      setRejected404(debug, msg);
+
+      const out: AnalyzerJsonOutput = {
+        startedAt,
+        inputUrl,
+        status: 'REJECTED_404',
+        phaseResolved: 'REJECTED_404',
+        reason: 'Página inválida ou URL não retornou conteúdo válido (hard 404).',
+        debug,
+      };
+
+      // REJECTED_404 é determinístico → grava no URL cache
+      persistDecision(cache, aiCache, inputUrl, out);
+      emit(out);
+      process.exit(0);
+    }
 
     debug.phase1 = {
       blocked: Boolean(identity.isBlocked),
       providersUsed: [mapUnfurlViaToProvider(identity.unfurlVia)],
-      identity
+      identity,
     };
 
-        // ── PHASE 2 — fuzzy no snapshot ──────────────────────────
+    // ── PHASE 2 — fuzzy no snapshot ──────────────────────────
 
-    const phase2Result = await searchNotionCache(
-      identity,
-      snapshot.phase_2_cache?.pages ?? {}
-    );
-
+    const phase2Result = await searchNotionCache(identity, notionPages);
     const phase2Candidates: NotionPage[] = phase2Result.candidates ?? [];
 
     debug.phase2 = {
       candidatesCount: phase2Candidates.length,
-      candidatesTop5: candidatesToDebugTop5(phase2Candidates)
+      candidatesTop5: candidatesToDebugTop5(phase2Candidates),
     };
 
     // Short-circuit: Phase 2 resolveu com confiança
@@ -355,46 +409,77 @@ function hydrateFoundFromCandidates(
         found: {
           pageId,
           pageUrl: getNotionPageUrl(pageId, title || pageId),
-          title
-        }
+          title,
+        },
       };
 
-      // URL cache ok aqui (decisão determinística o suficiente)
-      persistDecision(cache, inputUrl, out, undefined, phase2Candidates);
+      // TODO: construir evidenceKey aqui também para cachear por evidência
+      persistDecision(cache, aiCache, inputUrl, out, undefined, phase2Candidates);
       emit(out);
       process.exit(0);
     }
 
-        // ── PHASE 2.5 — roteamento (agora REAL) ───────────────────
-    // Usa o plano da Phase 2.5 (quando existir) como autoridade:
-    // - DISAMBIGUATE: 2..5 candidatos
-    // - CONFIRM_SINGLE_WEAK: 1 candidato
-    // - SKIP: não chama Phase 3
-    const plan = phase2Result.phase25;
+    // ── PHASE 2.5 — rescue (fonte única de verdade) ──────────
 
-    // Notinha #1: o conjunto REAL que vai pra Phase 3 também é o que entra no evidenceKey/caches
-    const phase3Candidates: NotionPage[] =
-      plan?.phase3Candidates && plan.phase3Candidates.length > 0
-        ? plan.phase3Candidates
-        : phase2Candidates;
+    const rescue = phase25Rescue(phase2Candidates);
+    const phase3Candidates = rescue.plan.phase3Candidates;
 
-    // Corrige erros de tipagem: DebugPhase25 tem shape fixo
-    // Como ainda não implementamos "rescue" de verdade, a regra é sempre SANITY_TOPK aqui.
-    // (Se um dia você fizer fallback top2, aí sim vira FALLBACK_TOP2)
-    debug.phase25 = {
-      candidatesCount: phase3Candidates.length,
-      candidates: candidatesToDebugTop5(phase3Candidates),
-      selectionRule: 'SANITY_TOPK'
-    };
+    debug.phase25 = buildPhase25Debug(phase3Candidates, rescue.selectionRule);
 
-    // ── EVIDENCE CACHE SHORT-CIRCUIT (v1) ────────────────────
-    // Notinha #1 (continuação): evidenceKey deve refletir o input REAL da Phase 3 (phase3Candidates)
+    // Short-circuit: Phase 2.5 decidiu não chamar Phase 3
+    if (!rescue.plan.shouldCallPhase3) {
+      const d = phase2Result.decision;
+
+      const out: AnalyzerJsonOutput = {
+        startedAt,
+        inputUrl,
+        status: d.result as AnalyzerResultStatus,
+        phaseResolved: d.phaseResolved as PhaseResolved,
+        reason: d.reason ?? '',
+        debug,
+        ...(d.notionId
+          ? { found: hydrateFoundFromCandidates(d.notionId, phase3Candidates) }
+          : {}),
+      };
+
+      persistDecision(cache, aiCache, inputUrl, out, undefined, phase3Candidates);
+      emit(out);
+      process.exit(0);
+    }
+
+    // ── EVIDENCE CACHE SHORT-CIRCUIT ─────────────────────────
+
     const evidenceKey = cache.buildEvidenceKey({
       identity,
       candidates: phase3Candidates,
-      policyVersion: 'phase3-ai-v1'
+      policyVersion: POLICY_VERSION,
     });
 
+    // 1) AiDecisionCache (mais específico para Phase 3)
+    const aiCacheHit = aiCache.get(evidenceKey);
+    if (aiCacheHit) {
+      console.log('⚡ AI evidence cache hit');
+
+      const cachedOut: AnalyzerJsonOutput = {
+        startedAt,
+        inputUrl,
+        status: aiCacheHit.result,
+        phaseResolved: aiCacheHit.phaseResolved,
+        reason: aiCacheHit.reason,
+        debug,
+        meta: {
+          aiDecisionCache: { hit: true, key: evidenceKey },
+        },
+        ...(aiCacheHit.chosenNotionId
+          ? { found: hydrateFoundFromCandidates(aiCacheHit.chosenNotionId, phase3Candidates) }
+          : {}),
+      };
+
+      emit(cachedOut);
+      process.exit(0);
+    }
+
+    // 2) CacheEngine decision cache (fallback)
     const decisionCacheHit = cache.getDecision(evidenceKey);
     if (decisionCacheHit) {
       console.log('⚡ Evidence cache hit');
@@ -406,48 +491,41 @@ function hydrateFoundFromCandidates(
         phaseResolved: decisionCacheHit.phaseResolved as PhaseResolved,
         reason: decisionCacheHit.reason,
         debug,
+        meta: {
+          decisionCache: { hit: true, key: evidenceKey },
+        },
         ...(decisionCacheHit.chosenNotionId
           ? { found: hydrateFoundFromCandidates(decisionCacheHit.chosenNotionId, phase3Candidates) }
-          : {})
+          : {}),
       };
 
       emit(cachedOut);
       process.exit(0);
     }
 
-    // ── PHASE 3 — AI Disambiguation (STUB → Notion live TODO) ─
-    // [BUG-FIX] gate "NOT_FOUND" → "NOTFOUND"
+    // ── PHASE 3 — AI Disambiguation ──────────────────────────
+
     const phase2Failed =
       phase2Result.decision.result === 'NOTFOUND' ||
       phase2Result.decision.result === 'AMBIGUOUS';
 
     const hasValidIdentity = isIdentityValidForAI(identity);
 
-    // Notinha #3: Gate é o Phase 2.5.
-    // Se plan não existir (por segurança), cai no comportamento antigo.
-    const shouldCallPhase3 =
-      plan?.shouldCallPhase3 ??
-      (phase3Candidates.length >= 2 && phase3Candidates.length <= 5);
+    if (phase2Failed && rescue.plan.shouldCallPhase3 && hasValidIdentity) {
+      console.log('\n🤖 [Phase 3] All gates passed, attempting AI disambiguation...');
 
-    if (phase2Failed && shouldCallPhase3 && hasValidIdentity) {
-      console.log('\n🤖 [Phase 3] All gates passed (via Phase 2.5), attempting AI disambiguation...');
-
-      // Notinha #2: aiDisambiguate precisa aceitar 1 candidato — o seu já aceita ✅
       const aiResult = await aiDisambiguate(identity, phase3Candidates);
+      const aiMatched = aiResult.matchedIndex >= 0 && aiResult.confidence >= 0.65;
 
-      debug.phase3 = {
-        mode: 'offline', // TODO: trocar para 'online' quando implementar Notion live
-        finalCandidates:
-          aiResult.matchedIndex >= 0 && aiResult.confidence >= 0.65
-            ? 1
-            : phase3Candidates.length,
-        finalCandidatePageIds:
-          aiResult.matchedIndex >= 0 && aiResult.confidence >= 0.65
-            ? [String((phase3Candidates[aiResult.matchedIndex] as any).notion_id)]
-            : undefined
-      };
+      debug.phase3 = buildPhase3Debug({
+        mode: 'offline',
+        finalCandidates: aiMatched ? 1 : phase3Candidates.length,
+        finalCandidatePageIds: aiMatched
+          ? [String((phase3Candidates[aiResult.matchedIndex] as any).notion_id)]
+          : undefined,
+      });
 
-      if (aiResult.matchedIndex >= 0 && aiResult.confidence >= 0.65) {
+      if (aiMatched) {
         const matched: any = phase3Candidates[aiResult.matchedIndex];
         const title = matched.title ?? matched.filename ?? matched.url ?? matched.notion_id;
         const reason = `AI match: ${aiResult.reason} (${(aiResult.confidence * 100).toFixed(0)}%)`;
@@ -462,16 +540,16 @@ function hydrateFoundFromCandidates(
           found: {
             pageId: matched.notion_id,
             pageUrl: getNotionPageUrl(matched.notion_id, title),
-            title
-          }
+            title,
+          },
         };
 
-        // Notinha #1 (final): persistDecision deve usar o MESMO conjunto do evidenceKey/Phase3
-        persistDecision(cache, inputUrl, out, evidenceKey, phase3Candidates);
+        persistDecision(cache, aiCache, inputUrl, out, evidenceKey, phase3Candidates, aiResult.confidence);
         emit(out);
         process.exit(0);
       }
     }
+
     // ── SAÍDA FINAL — não resolveu ────────────────────────────
 
     if (phase2Result.decision.result === 'AMBIGUOUS') {
@@ -483,11 +561,11 @@ function hydrateFoundFromCandidates(
         reason: phase2Result.decision.reason ?? '',
         debug,
         ambiguous: {
-          pageIds: phase2Candidates.map((c: any) => String(c.notion_id))
-        }
+          pageIds: phase2Candidates.map((c: any) => String(c.notion_id)),
+        },
       };
 
-      persistDecision(cache, inputUrl, out, evidenceKey, phase3Candidates);
+      persistDecision(cache, aiCache, inputUrl, out, evidenceKey, phase3Candidates);
       emit(out);
       process.exit(0);
     }
@@ -499,10 +577,10 @@ function hydrateFoundFromCandidates(
       status: 'NOTFOUND',
       phaseResolved: 'PHASE_2',
       reason: phase2Result.decision.reason ?? '',
-      debug
+      debug,
     };
 
-    persistDecision(cache, inputUrl, out, evidenceKey, phase3Candidates);
+    persistDecision(cache, aiCache, inputUrl, out, evidenceKey, phase3Candidates);
     emit(out);
     process.exit(0);
 

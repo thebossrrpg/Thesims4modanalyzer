@@ -14,8 +14,6 @@ export type PhaseResolved =
   | "PHASE_3"
   | "REJECTED_404";
 
-// Você já tem um modelo de Identity no projeto; aqui a gente só referencia como "Identity".
-//export type Identity = any;
 
 export type ProviderUsed =
   | "og-web-api"

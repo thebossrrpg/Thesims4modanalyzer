@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "snapshotVersion": "unknown:975",
+  "policyVersion": "phase3-ai-v1",
+  "entries": {
+    "8528db2a0d8b3a124e890fd07851fe226e08d6aa4d982ef442c831caebb600ef": {
+      "result": "NOTFOUND",
+      "phaseResolved": "PHASE_2",
+      "reason": "❌ No confident match for \"wellness\". Best: 30% (threshold: 48%)",
+      "timestamp": 1771693908561
+    }
+  }
+}

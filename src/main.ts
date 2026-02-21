@@ -217,7 +217,7 @@ function hydrateFoundFromCandidates(
 
     // ── SNAPSHOT + CACHE INIT ────────────────────────────────
 
-    const snapshot: NotionCacheSnapshot = loadSnapshot('./snapshot.json');
+    const snapshot: NotionCacheSnapshot = loadSnapshot("./snapshot.json");
     const snapshotVersion = buildSnapshotVersion(snapshot);
 
     const cache = CacheEngine.load(snapshotVersion);
@@ -226,37 +226,72 @@ function hydrateFoundFromCandidates(
     // ⚡ URL CACHE SHORT-CIRCUIT (determinístico)
     const urlCacheHit = cache.getUrlDecision(inputUrl);
     if (urlCacheHit) {
-      console.log('⚡ URL cache hit');
+      console.log("⚡ URL cache hit");
 
-      const cachedOut: AnalyzerJsonOutput = {
-        startedAt,
-        inputUrl,
-        status: urlCacheHit.result as AnalyzerResultStatus,
-        phaseResolved: urlCacheHit.phaseResolved as PhaseResolved,
-        reason: urlCacheHit.reason,
-        debug,
-        meta: {
-          decisionCache: { hit: true, key: urlCacheHit.urlKey },
-        },
-        ...(urlCacheHit.chosenNotionId
-          ? { found: hydrateFoundFromCandidates(urlCacheHit.chosenNotionId, []) }
-          : {}),
+    // Hidratação determinística: procura no snapshot "real" (Phase 0/0.5)
+    let found:
+      | { pageId: string; pageUrl?: string; title: string }
+      | undefined = undefined;
+
+    if (urlCacheHit.chosenNotionId) {
+    const id = urlCacheHit.chosenNotionId;
+
+    // 1) tenta pelo snapshot (fonte de verdade do Phase 0/0.5)
+    const snapPage = snapshot.notion_pages?.[id];
+
+    if (snapPage) {
+      const title =
+        snapPage.title ?? snapPage.filename ?? snapPage.url ?? snapPage.notion_id;
+
+      found = {
+        pageId: id,
+        pageUrl: getNotionPageUrl(id, title),
+        title,
       };
+    } else {
+      // 2) fallback: tenta phase_2_cache (caso você tenha gravado chosenNotionId vindo de Phase 2/3 por acidente)
+      const p2Page = snapshot.phase_2_cache?.pages?.[id];
+      const title =
+        p2Page?.title ?? p2Page?.filename ?? p2Page?.url ?? id;
 
-      emit(cachedOut);
-      process.exit(0);
+      found = {
+        pageId: id,
+        pageUrl: getNotionPageUrl(id, title),
+        title,
+      };
     }
+  }
 
-    const notionPages: Record<string, NotionPage> = {
-      ...(snapshot.notion_pages ?? {}),
-      ...(snapshot.phase_2_cache?.pages ?? {}),
-    };
+  const cachedOut: AnalyzerJsonOutput = {
+    startedAt,
+    inputUrl,
+    status: urlCacheHit.result as AnalyzerResultStatus,
+    phaseResolved: urlCacheHit.phaseResolved as PhaseResolved,
+    reason: urlCacheHit.reason,
+    debug,
+    meta: {
+      decisionCache: { hit: true, key: urlCacheHit.urlKey },
+    },
+    ...(found ? { found } : {}),
+  };
+
+  emit(cachedOut);
+  process.exit(0);
+}
+
+    // ✅ IMPORTANTÍSSIMO: não misturar datasets.
+    // - Phase 0/0.5 precisam da URL ORIGINAL (fonte).
+    // - Phase 2 precisa do índice/cache pra fuzzy.
+      const notionPagesPhase0: Record<string, NotionPage> = snapshot.notion_pages ?? {};
+      const notionPagesPhase2: Record<string, NotionPage> = snapshot.phase_2_cache?.pages ?? {};
+
 
     // ── PHASE 0 — URL lookup exato ───────────────────────────
 
     const inputKeys = urlLookupKeys(inputUrl);
 
-    const phase0Match = Object.values(notionPages).find((p) => {
+    console.log("🧪 [Probe] Phase 0 running. pages0 =", Object.keys(notionPagesPhase0).length);
+    const phase0Match = Object.values(notionPagesPhase0).find((p) => {
       if (!p.url) return false;
       const pKeys = urlLookupKeys(p.url);
       return pKeys.some((k) => inputKeys.includes(k));
@@ -296,7 +331,7 @@ function hydrateFoundFromCandidates(
     let phase05Match: NotionPage | null = null;
 
     if (inputSlugData) {
-      const slugMatches = Object.values(notionPages).filter((p) => {
+      const slugMatches = Object.values(notionPagesPhase0).filter((p) => {
         if (!p.url) return false;
         const snapSlug = extractFinalSlug(p.url);
         if (!snapSlug) return false;
@@ -386,7 +421,7 @@ function hydrateFoundFromCandidates(
 
     // ── PHASE 2 — fuzzy no snapshot ──────────────────────────
 
-    const phase2Result = await searchNotionCache(identity, notionPages);
+    const phase2Result = await searchNotionCache(identity, notionPagesPhase2);
     const phase2Candidates: NotionPage[] = phase2Result.candidates ?? [];
 
     debug.phase2 = {

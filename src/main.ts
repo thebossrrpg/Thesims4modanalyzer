@@ -7,6 +7,7 @@
 // [FIX]    snapshotVersion → buildSnapshotVersion(snapshot)
 // [FIX]    POLICY_VERSION como constante explícita
 
+import "dotenv/config";
 import { analyzeUrl } from './phase1/analyzeUrl.js';
 import { searchNotionCache } from './phase2/searchNotionCache.js';
 import { aiDisambiguate, isIdentityValidForAI } from './phase3/aiDisambiguate.js';

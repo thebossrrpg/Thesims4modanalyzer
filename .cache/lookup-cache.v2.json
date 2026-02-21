@@ -2,12 +2,12 @@
   "version": 2,
   "snapshotVersion": "unknown:975",
   "urlCache": {
-    "https://simularity.cc/mods/other/mental-health-medications/": {
+    "https://simularity.cc/mods/other/mental-health-medications": {
       "result": "FOUND",
       "reason": "Direct URL match in Notion snapshot (Phase 0)",
       "phaseResolved": "PHASE_0",
-      "timestamp": 1771700203411,
-      "urlKey": "https://simularity.cc/mods/other/mental-health-medications/",
+      "timestamp": 1771702168076,
+      "urlKey": "https://simularity.cc/mods/other/mental-health-medications",
       "chosenNotionId": "00015cdb-e6b5-46c9-9798-410fe0515018",
       "candidateNotionIds": []
     }

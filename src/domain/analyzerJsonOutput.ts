@@ -1,4 +1,5 @@
 // src/domain/analyzerJsonOutput.ts
+import type { Identity } from "./identity.js";
 
 export type AnalyzerResultStatus =
   | "FOUND"
@@ -14,7 +15,7 @@ export type PhaseResolved =
   | "REJECTED_404";
 
 // Você já tem um modelo de Identity no projeto; aqui a gente só referencia como "Identity".
-export type Identity = any;
+//export type Identity = any;
 
 export type ProviderUsed =
   | "og-web-api"
@@ -55,9 +56,9 @@ export interface DebugPhase2 {
 }
 
 export interface DebugPhase25 {
-  candidatesCount: number;          // M (>0)
-  candidates: CandidateDebug[];     // 2 ou 3 normalmente
-  selectionRule: "SANITY_TOPK" | "FALLBACK_TOP2";
+  candidatesCount: number;
+  candidates: CandidateDebug[];
+  selectionRule: "NONE" | "PLAN_TOP5" | "SANITY_TOPK" | "CONFIRM_SINGLE_WEAK" | "FALLBACK_TOP2";
 }
 
 export interface DebugPhase3 {

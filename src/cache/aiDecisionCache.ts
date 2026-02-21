@@ -1,201 +1,144 @@
-// src/cache/pageIdNotionCache.ts
+// src/cache/aiDecisionCache.ts
 //
-// Cache por pageId (Notion live).
-// Objetivo: quando a Phase 3 buscar detalhes no Notion por notion_id,
-// a gente salva aqui e evita repetir chamadas enquanto o cache estiver "fresco" (TTL).
+// Cache de decisões do Phase 3 (IA / Notion-live no futuro) por EVIDENCE KEY.
+// - Chave: evidenceKey (string) — gerada por CacheEngine.buildEvidenceKey(...)
+// - Invalida automaticamente quando snapshotVersion muda
+// - Invalida automaticamente quando policyVersion muda
 //
-// Arquivo gerado: .cache/notion-page-cache.v1.json
-//
-// Observação: este cache NÃO é "por URL" e NÃO depende do snapshot pra ser válido.
-// Ele é por pageId (notion_id). Se quiser amarrar ao snapshot, dá pra guardar a versão
-// só por debug — mas não invalida automaticamente.
+// Observação: este cache NÃO é “por URL”. É “por evidência” (assinatura do caso).
+// URL cache determinístico fica em outro lugar (Phase 0/0.5/REJECTED_404).
 
-import fs from "fs";
-import path from "path";
+import fs from 'fs';
+import path from 'path';
+import {
+  ensureCacheDir,
+  safeReadJson,
+  atomicWriteJson,
+} from '../utils/cacheIo.js';
 
-export type NotionLivePage = {
-  pageId: string;
+import type { AnalyzerResultStatus, PhaseResolved } from "../domain/analyzerJsonOutput.js";
 
-  // Campos mínimos úteis pra Phase 3 “confirmar/desambiguar”
-  title: string | null;
-  creator: string | null;
+export interface AiDecisionCacheEntry {
+  result: AnalyzerResultStatus;
+  phaseResolved: PhaseResolved;
+  reason: string;
 
-  // URL canônica (opcional). Se você montar URL via helper, pode deixar null.
-  url: string | null;
+  // quando FOUND
+  chosenNotionId?: string;
 
-  // Última edição (string ISO do Notion, se você tiver isso)
-  lastEditedTime: string | null;
+  // opcional: telemetria para debug
+  confidence?: number; // 0..1
+  model?: string;
 
-  // Quando esse registro foi buscado “ao vivo”
-  fetchedAt: number;
+  timestamp: number; // epoch ms
+}
+
+type AiDecisionCacheFile = {
+  schemaVersion: 1;
+  snapshotVersion: string;
+  policyVersion: string;
+  entries: Record<string, AiDecisionCacheEntry>;
 };
 
-type NotionPageCacheFile = {
-  schemaVersion: "notion-page-cache.v1";
+// DEPOIS
+const CACHE_DIR = path.resolve(process.cwd(), '.cache');
+const CACHE_FILE = path.join(CACHE_DIR, 'ai-decision-cache.v1.json');
 
-  // Só pra debug (não invalida)
-  snapshotVersion?: string;
+// Segurança: evita crescimento infinito
+const MAX_ENTRIES = 4000;
 
-  // TTL global do arquivo (ms)
-  ttlMs: number;
-
-  // pageId -> NotionLivePage
-  entries: Record<string, NotionLivePage>;
-};
-
-const CACHE_DIR = path.resolve(process.cwd(), ".cache");
-const CACHE_FILE = path.join(CACHE_DIR, "notion-page-cache.v1.json");
-
-// Um TTL “safe” (ajuste depois): 7 dias.
-const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-
-function ensureCacheDir(): void {
-  fs.mkdirSync(CACHE_DIR, { recursive: true });
+function emptyFile(snapshotVersion: string, policyVersion: string): AiDecisionCacheFile {
+  return {
+    schemaVersion: 1,
+    snapshotVersion,
+    policyVersion,
+    entries: {},
+  };
 }
 
-function now(): number {
-  return Date.now();
+function pruneIfNeeded(file: AiDecisionCacheFile): void {
+  const keys = Object.keys(file.entries);
+  if (keys.length <= MAX_ENTRIES) return;
+
+  const sorted = keys
+    .map((k) => ({ k, t: file.entries[k]?.timestamp ?? 0 }))
+    .sort((a, b) => a.t - b.t);
+
+  const toRemove = sorted.slice(0, keys.length - MAX_ENTRIES);
+  for (const item of toRemove) delete file.entries[item.k];
 }
 
-function normalizePageId(pageId: string): string {
-  return String(pageId || "").trim();
-}
+export class AiDecisionCache {
+  private data: AiDecisionCacheFile;
 
-function isFresh(entry: NotionLivePage, ttlMs: number): boolean {
-  return now() - entry.fetchedAt <= ttlMs;
-}
-
-// Escrita atômica: escreve em tmp e renomeia
-function writeJsonAtomic(filePath: string, data: unknown): void {
-  ensureCacheDir();
-  const tmpPath = `${filePath}.tmp`;
-  fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf-8");
-  fs.renameSync(tmpPath, filePath);
-}
-
-export class PageIdNotionCache {
-  private state: NotionPageCacheFile;
-
-  private constructor(state: NotionPageCacheFile) {
-    this.state = state;
+  private constructor(data: AiDecisionCacheFile) {
+    this.data = data;
   }
 
-  static load(opts?: { ttlMs?: number; snapshotVersion?: string }): PageIdNotionCache {
+  static load(snapshotVersion: string, policyVersion: string): AiDecisionCache {
     ensureCacheDir();
 
-    const ttlMs = opts?.ttlMs ?? DEFAULT_TTL_MS;
+    const parsed = safeReadJson(CACHE_FILE) as Partial<AiDecisionCacheFile> | null;
 
-    try {
-      const raw = fs.readFileSync(CACHE_FILE, "utf-8");
-      const parsed = JSON.parse(raw) as Partial<NotionPageCacheFile>;
-
-      // Se arquivo estiver zoado/incompatível, recomeça limpo
-      if (parsed.schemaVersion !== "notion-page-cache.v1" || !parsed.entries) {
-        return new PageIdNotionCache({
-          schemaVersion: "notion-page-cache.v1",
-          snapshotVersion: opts?.snapshotVersion,
-          ttlMs,
-          entries: {},
-        });
-      }
-
-      const state: NotionPageCacheFile = {
-        schemaVersion: "notion-page-cache.v1",
-        snapshotVersion: opts?.snapshotVersion ?? parsed.snapshotVersion,
-        ttlMs: typeof parsed.ttlMs === "number" ? parsed.ttlMs : ttlMs,
-        entries: parsed.entries as Record<string, NotionLivePage>,
-      };
-
-      // Atualiza TTL se o caller passou outro (mantém flexível)
-      state.ttlMs = ttlMs;
-
-      const cache = new PageIdNotionCache(state);
-      cache.pruneExpired();
-      cache.save(); // persistimos prune
-      return cache;
-    } catch {
-      return new PageIdNotionCache({
-        schemaVersion: "notion-page-cache.v1",
-        snapshotVersion: opts?.snapshotVersion,
-        ttlMs,
-        entries: {},
-      });
+    // Se não existe ou tá inválido
+    if (!parsed || typeof parsed !== "object") {
+      return new AiDecisionCache(emptyFile(snapshotVersion, policyVersion));
     }
+
+    // Schema
+    if (parsed.schemaVersion !== 1) {
+      return new AiDecisionCache(emptyFile(snapshotVersion, policyVersion));
+    }
+
+    // Invalidação por versão
+    const sameSnapshot = parsed.snapshotVersion === snapshotVersion;
+    const samePolicy = parsed.policyVersion === policyVersion;
+
+    if (!sameSnapshot || !samePolicy) {
+      return new AiDecisionCache(emptyFile(snapshotVersion, policyVersion));
+    }
+
+    const entries =
+      parsed.entries && typeof parsed.entries === "object"
+        ? (parsed.entries as Record<string, AiDecisionCacheEntry>)
+        : {};
+
+    return new AiDecisionCache({
+      schemaVersion: 1,
+      snapshotVersion,
+      policyVersion,
+      entries,
+    });
+  }
+
+  get(evidenceKey: string): AiDecisionCacheEntry | null {
+    if (!evidenceKey) return null;
+    return this.data.entries[evidenceKey] ?? null;
+  }
+
+  set(
+    evidenceKey: string,
+    entry: Omit<AiDecisionCacheEntry, "timestamp"> & { timestamp?: number }
+  ): void {
+    if (!evidenceKey) return;
+
+    this.data.entries[evidenceKey] = {
+      ...entry,
+      timestamp: entry.timestamp ?? Date.now(),
+    };
+
+    pruneIfNeeded(this.data);
   }
 
   save(): void {
-    writeJsonAtomic(CACHE_FILE, this.state);
+    atomicWriteJson(CACHE_FILE, this.data);
   }
 
-  /** Remove entradas vencidas (TTL). */
-  pruneExpired(): void {
-    const ttlMs = this.state.ttlMs;
-    for (const [pageId, entry] of Object.entries(this.state.entries)) {
-      if (!isFresh(entry, ttlMs)) {
-        delete this.state.entries[pageId];
-      }
-    }
+  clear(): void {
+    this.data.entries = {};
   }
 
-  /** Retorna entrada se ainda estiver fresca; senão retorna null (e já remove do cache). */
-  get(pageId: string): NotionLivePage | null {
-    const key = normalizePageId(pageId);
-    if (!key) return null;
-
-    const entry = this.state.entries[key];
-    if (!entry) return null;
-
-    if (!isFresh(entry, this.state.ttlMs)) {
-      delete this.state.entries[key];
-      return null;
-    }
-
-    return entry;
-  }
-
-  /**
-   * Retorna entrada apenas se, além de fresca, ela não estiver "mais velha"
-   * que um lastEditedTime conhecido.
-   *
-   * Use isso quando você souber o last_edited_time do snapshot e quiser garantir
-   * que o live cache não está atrasado.
-   */
-  getIfUpToDate(pageId: string, minLastEditedTimeISO: string | null): NotionLivePage | null {
-    const entry = this.get(pageId);
-    if (!entry) return null;
-
-    if (!minLastEditedTimeISO) return entry;
-    if (!entry.lastEditedTime) return null;
-
-    const min = Date.parse(minLastEditedTimeISO);
-    const got = Date.parse(entry.lastEditedTime);
-
-    // Se não der pra parsear, não bloqueia (fallback permissivo)
-    if (!Number.isFinite(min) || !Number.isFinite(got)) return entry;
-
-    return got >= min ? entry : null;
-  }
-
-  /** Salva/atualiza uma página (sempre renova fetchedAt). */
-  set(page: Omit<NotionLivePage, "fetchedAt">): NotionLivePage {
-    const pageId = normalizePageId(page.pageId);
-    if (!pageId) {
-      throw new Error("PageIdNotionCache.set: pageId vazio");
-    }
-
-    const entry: NotionLivePage = {
-      ...page,
-      pageId,
-      fetchedAt: now(),
-    };
-
-    this.state.entries[pageId] = entry;
-    return entry;
-  }
-
-  /** Para debug/telemetria: quantas entradas ainda estão válidas */
   size(): number {
-    this.pruneExpired();
-    return Object.keys(this.state.entries).length;
+    return Object.keys(this.data.entries).length;
   }
 }

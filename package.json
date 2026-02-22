@@ -6,7 +6,9 @@
     "build": "tsc",
     "start": "node dist/src/main.js",
     "pull:notionsync": "node scripts/fetchAnalyzerNotionSync.mjs",
-    "merge:notion": "node --loader ts-node/esm --no-warnings scripts/mergeNotionPagesIntoSnapshot.ts"
+    "merge:notion": "node --loader ts-node/esm --no-warnings scripts/mergeNotionPagesIntoSnapshot.ts",
+    "web:start": "node dist/src/web/server.js",
+    "web:dev": "node --loader ts-node/esm --no-warnings src/web/server.ts"
   },
   "dependencies": {
     "cheerio": "^1.0.0-rc.12",

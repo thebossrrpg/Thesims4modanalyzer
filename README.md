@@ -130,9 +130,21 @@ Essa versão:
 
 ---
 
-## 🔮 Próximo Passo
 
-Interface web offline para uso amigável, sem depender de linha de comando.
+## 🌐 Interface web (mostly offline)
+
+Agora o projeto inclui uma interface web local para uso sem linha de comando:
+
+1. `npm run build`
+2. `npm run web:start`
+3. Abra `http://localhost:4173`
+
+Características:
+- Reaproveita o pipeline atual (Phase 0 → 3) sem duplicar lógica
+- Executa análise local via CLI (`--json`)
+- Mostra status inequívoco (`FOUND`, `NOTFOUND`, `AMBIGUOUS`, `REJECTED_404`)
+- Indica quando a decisão veio de IA (`PHASE_3`)
+- Oferece downloads de cache/logs para auditoria
 
 ---
 

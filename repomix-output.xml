@@ -40,6 +40,8 @@ The content is organized as follows:
 </file_summary>
 
 <directory_structure>
+.cache/ai-decision-cache.v1.json
+.cache/lookup-cache.v2.json
 .gitattributes
 .github/workflows/merge-notion-pages.yml
 .github/workflows/pull-notionsync.yml
@@ -69,12 +71,29 @@ src/utils/cacheIo.ts
 src/utils/debug.ts
 src/utils/notion.ts
 src/utils/snapshotVersion.ts
+src/web/server.ts
 tsconfig.json
 tsconfig.scripts.json
 </directory_structure>
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path=".cache/ai-decision-cache.v1.json">
+{
+  "schemaVersion": 1,
+  "snapshotVersion": "unknown:975",
+  "policyVersion": "phase3-ai-v1",
+  "entries": {
+    "8528db2a0d8b3a124e890fd07851fe226e08d6aa4d982ef442c831caebb600ef": {
+      "result": "NOTFOUND",
+      "phaseResolved": "PHASE_2",
+      "reason": "❌ No confident match for \"wellness\". Best: 30% (threshold: 48%)",
+      "timestamp": 1771693908561
+    }
+  }
+}
+</file>
 
 <file path=".gitattributes">
 * text=auto eol=lf
@@ -458,6 +477,26 @@ export function buildSnapshotVersion(snapshot: NotionCacheSnapshot): string {
     "strict": false,
     "skipLibCheck": true
   }
+}
+</file>
+
+<file path=".cache/lookup-cache.v2.json">
+{
+  "version": 2,
+  "snapshotVersion": "unknown:975",
+  "urlCache": {
+    "https://simularity.cc/mods/other/mental-health-medications": {
+      "result": "FOUND",
+      "reason": "Direct URL match in Notion snapshot (Phase 0)",
+      "phaseResolved": "PHASE_0",
+      "timestamp": 1771702168076,
+      "urlKey": "https://simularity.cc/mods/other/mental-health-medications",
+      "chosenNotionId": "00015cdb-e6b5-46c9-9798-410fe0515018",
+      "candidateNotionIds": []
+    }
+  },
+  "notionPageCache": {},
+  "decisionCache": {}
 }
 </file>
 
@@ -9913,6 +9952,355 @@ export function canonicalizeUrlKey(rawUrl: string): string {
     return input;
   }
 }
+</file>
+
+<file path="src/web/server.ts">
+import http from 'node:http';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import { URL } from 'node:url';
+import { spawn } from 'node:child_process';
+
+const PORT = Number(process.env.WEB_PORT ?? 4173);
+const HOST = process.env.WEB_HOST ?? '0.0.0.0';
+const analyzerEntry = path.resolve(process.cwd(), 'dist/src/main.js');
+const inlineFaviconSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff3fb0"/><stop offset="1" stop-color="#f02bd2"/></linearGradient></defs><circle cx="32" cy="32" r="30" fill="url(#g)"/><text x="50%" y="54%" text-anchor="middle" dominant-baseline="middle" font-size="30">💵</text></svg>`;
+
+const downloadableFiles: Record<string, { filePath: string; mime: string }> = {
+  'notioncache.json': { filePath: path.resolve(process.cwd(), 'snapshot.json'), mime: 'application/json' },
+  'matchcache.json': { filePath: path.resolve(process.cwd(), '.cache/lookup-cache.v2.json'), mime: 'application/json' },
+  'notfoundcache.json': { filePath: path.resolve(process.cwd(), '.cache/ai-decision-cache.v1.json'), mime: 'application/json' },
+  'decisionlog.html': { filePath: path.resolve(process.cwd(), 'decisionlog.html'), mime: 'text/html' },
+  'ialog.html': { filePath: path.resolve(process.cwd(), 'ialog.html'), mime: 'text/html' },
+};
+
+const html = `<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TS4 Mod Analyzer</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,${encodeURIComponent(inlineFaviconSvg)}" />
+  <style>
+    :root {
+      --card-bg: rgba(248, 248, 248, 0.9);
+      --text: #23242a;
+      --muted: #6f7280;
+      --btn-grad: linear-gradient(90deg, #6282ff 0%, #7646b8 100%);
+      --bg-grad: linear-gradient(120deg, #6d8fff 0%, #7f5eb8 100%);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      color: var(--text);
+      background: var(--bg-grad);
+      display: grid;
+      place-items: center;
+      padding: 16px;
+    }
+
+    .wrapper {
+      width: 100%;
+      max-width: 560px;
+      background: var(--card-bg);
+      border-radius: 14px;
+      box-shadow: 0 20px 40px rgba(16, 17, 26, 0.25);
+      padding: 28px 28px 20px;
+      backdrop-filter: blur(2px);
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 40px;
+      letter-spacing: 0.2px;
+    }
+
+    .subtitle {
+      margin: 0 0 22px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    label {
+      display: block;
+      font-size: 14px;
+      margin-bottom: 8px;
+      color: #44475a;
+      font-weight: 600;
+    }
+
+    input {
+      width: 100%;
+      padding: 11px 12px;
+      border: 1px solid #d4d4d9;
+      border-radius: 9px;
+      font-size: 14px;
+      outline: none;
+      margin-bottom: 14px;
+      background: #fff;
+    }
+
+    input:focus { border-color: #6f7ef2; box-shadow: 0 0 0 3px rgba(100, 121, 255, 0.15); }
+
+    button {
+      width: 100%;
+      border: none;
+      border-radius: 9px;
+      padding: 12px;
+      font-size: 15px;
+      font-weight: 700;
+      color: #fff;
+      background: var(--btn-grad);
+      cursor: pointer;
+    }
+
+    pre {
+      margin: 16px 0 8px;
+      white-space: pre-wrap;
+      border-radius: 9px;
+      background: #fff;
+      border: 1px solid #e1e3eb;
+      padding: 10px 12px;
+      min-height: 86px;
+      max-height: 190px;
+      overflow: auto;
+      color: #2f3342;
+    }
+
+    .ia-note {
+      margin: 8px 0 0;
+      color: #555d7a;
+      font-size: 13px;
+    }
+
+    .downloads {
+      margin-top: 14px;
+      border-top: 1px solid #d7d9e2;
+      padding-top: 12px;
+      display: grid;
+      gap: 8px;
+      font-size: 13px;
+    }
+
+    .download-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      color: #545a73;
+    }
+
+    .download-row a {
+      color: #4f56c6;
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    .footer {
+      margin-top: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-size: 12px;
+      color: #777b8f;
+    }
+
+    .footer-icon {
+      width: 16px;
+      height: 16px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, #ff3fb0, #f02bd2);
+      display: inline-grid;
+      place-items: center;
+      color: #fff;
+      font-size: 11px;
+    }
+  </style>
+</head>
+<body>
+  <main class="wrapper">
+    <h1>TS4 Mod Analyzer</h1>
+    <p class="subtitle">Interface local (mostly offline) com pipeline canônico Phase 0 → Phase 3.</p>
+
+    <label for="url">URL do Mod</label>
+    <input id="url" type="url" placeholder="https://www.patreon.com/posts/ultimate-pack-123456" />
+    <button id="analyze">Analisar</button>
+
+    <pre id="summary">Aguardando análise.</pre>
+    <p class="ia-note" id="ia-note"></p>
+
+    <section class="downloads" aria-label="Downloads de auditoria">
+      <div><strong>Downloads de cache:</strong></div>
+      <div class="download-row">
+        <a href="/download/notioncache.json">notioncache.json</a>
+        <a href="/download/matchcache.json">matchcache.json</a>
+        <a href="/download/notfoundcache.json">notfoundcache.json</a>
+      </div>
+      <div><strong>Downloads de logs:</strong></div>
+      <div class="download-row">
+        <a href="/download/decisionlog.html">decisionlog.html</a>
+        <a href="/download/ialog.html">ialog.html</a>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <span class="footer-icon">💵</span>
+      <span>Criado por Akin UnpaidSimmer • v1.0.5</span>
+    </footer>
+  </main>
+
+  <script>
+    const btn = document.getElementById('analyze');
+    const input = document.getElementById('url');
+    const summary = document.getElementById('summary');
+    const iaNote = document.getElementById('ia-note');
+
+    function render(data) {
+      const status = data.status || 'UNKNOWN';
+      const source = data.phaseResolved || 'N/A';
+      const reason = data.reason || 'sem motivo';
+      const found = data.found ? '\nMatch: ' + data.found.title + ' (' + data.found.pageId + ')' + '\nNotion: ' + (data.found.pageUrl || 'N/A') : '';
+      const amb = data.ambiguous?.pageIds?.length ? '\nCandidatos: ' + data.ambiguous.pageIds.join(', ') : '';
+      summary.textContent = 'Status: ' + status + '\nOrigem: ' + source + '\nMotivo: ' + reason + found + amb;
+      iaNote.textContent = source === 'PHASE_3' ? 'Decisão usou IA como último recurso.' : 'Sem uso de IA na decisão final.';
+    }
+
+    btn.addEventListener('click', async () => {
+      const url = input.value.trim();
+      if (!url) return;
+      summary.textContent = 'Analisando...';
+      iaNote.textContent = '';
+      try {
+        const res = await fetch('/api/analyze?url=' + encodeURIComponent(url));
+        const data = await res.json();
+        if (!res.ok) {
+          summary.textContent = data.error || 'Erro inesperado';
+          return;
+        }
+        render(data);
+      } catch (err) {
+        summary.textContent = 'Falha ao conectar no servidor local.';
+      }
+    });
+  </script>
+</body>
+</html>`;
+
+function sendJson(res: http.ServerResponse, status: number, payload: unknown): void {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify(payload, null, 2));
+}
+
+function parseAnalyzerJson(raw: string): any {
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start < 0 || end < start) {
+    throw new Error('Saída do analyzer não contém JSON válido.');
+  }
+  return JSON.parse(raw.slice(start, end + 1));
+}
+
+async function analyzeUrl(inputUrl: string): Promise<any> {
+  await fs.access(analyzerEntry);
+
+  return await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [analyzerEntry, inputUrl, '--json'], {
+      cwd: process.cwd(),
+      env: process.env,
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (chunk) => {
+      stdout += String(chunk);
+    });
+
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk);
+    });
+
+    child.on('error', reject);
+
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(stderr || `Analyzer saiu com código ${code}`));
+        return;
+      }
+      try {
+        resolve(parseAnalyzerJson(stdout));
+      } catch (error) {
+        reject(error);
+      }
+    });
+  });
+}
+
+const server = http.createServer(async (req, res) => {
+  if (!req.url) {
+    sendJson(res, 400, { error: 'missing_url' });
+    return;
+  }
+
+  const requestUrl = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);
+
+  if (requestUrl.pathname === '/') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+    return;
+  }
+
+  if (requestUrl.pathname === '/api/analyze') {
+    const inputUrl = requestUrl.searchParams.get('url')?.trim();
+    if (!inputUrl) {
+      sendJson(res, 400, { error: 'url_required' });
+      return;
+    }
+
+    try {
+      const result = await analyzeUrl(inputUrl);
+      sendJson(res, 200, result);
+    } catch (error: any) {
+      sendJson(res, 500, {
+        error: 'analyze_failed',
+        message: String(error?.message ?? error),
+        hint: 'Execute npm run build antes de iniciar a interface web.',
+      });
+    }
+    return;
+  }
+
+  if (requestUrl.pathname.startsWith('/download/')) {
+    const key = requestUrl.pathname.replace('/download/', '');
+    const def = downloadableFiles[key];
+    if (!def) {
+      sendJson(res, 404, { error: 'file_not_mapped' });
+      return;
+    }
+
+    try {
+      const body = await fs.readFile(def.filePath);
+      res.writeHead(200, {
+        'Content-Type': def.mime,
+        'Content-Disposition': `attachment; filename="${key}"`,
+      });
+      res.end(body);
+    } catch {
+      sendJson(res, 404, { error: 'file_not_found', file: key });
+    }
+    return;
+  }
+
+  sendJson(res, 404, { error: 'not_found' });
+});
+
+server.listen(PORT, HOST, () => {
+  console.log(`🌐 TS4 Mod Analyzer web UI em http://${HOST}:${PORT}`);
+});
 </file>
 
 <file path="snapshot.json">
@@ -28399,162 +28787,8 @@ export function buildPhase3Debug(params: {
 }
 </file>
 
-<file path="README.md">
-# 🧠 TS4 Mod Analyzer
+<file path=".gitignore">
 
-> Um detetive automatizado para identificar mods do The Sims 4 dentro do seu banco do Notion a partir de uma URL.
-
----
-
-## ✨ O que é isso?
-
-O **TS4 Mod Analyzer** recebe a URL de um mod e descobre automaticamente se esse mod já existe no banco de dados do Notion.
-
-Ele não apenas compara links — ele analisa nomes, títulos, criadores e padrões para tomar uma decisão inteligente.
-
----
-
-## 🎯 Objetivo
-
-Gerenciar muitos mods manualmente é caótico.
-
-Esse projeto foi criado para:
-
-- 🔎 Verificar se um mod já está cadastrado
-- 🚫 Evitar duplicatas
-- 📚 Organizar sua base no Notion
-- 🤖 Tomar decisões consistentes automaticamente
-- 🧩 Resolver ambiguidades com IA quando necessário
-
----
-
-## 🧠 Como ele pensa?
-
-O sistema funciona em etapas, como um funil de decisão.
-
----
-
-### 🟢 Phase 0 — Match direto
-
-Primeiro ele verifica:
-
-> Essa URL já existe exatamente igual no snapshot do Notion?
-
-Se sim → ✅ Encontrado imediatamente.
-
-Sem análise extra.
-
----
-
-### 🟡 Phase 1 — Análise da página
-
-Se não houver match direto, ele:
-
-- Abre a página
-- Lê o título
-- Extrai metadados públicos
-- Analisa o slug da URL
-- Detecta se a página é inválida (ex: 404)
-
-Se a página for inválida, o processo é interrompido.
-
----
-
-### 🟠 Phase 2 — Busca inteligente
-
-Aqui começa a parte interessante.
-
-O sistema compara:
-
-- Nome do mod
-- Criador
-- Tokens do título
-- Palavras do slug
-- Domínio da URL
-
-Ele calcula uma pontuação de similaridade.
-
-Se a confiança for alta → 🎯 Match encontrado.  
-Se houver dúvida → passa para a próxima etapa.
-
----
-
-### 🔵 Phase 3 — Desempate com IA
-
-Quando há poucos candidatos muito parecidos, a IA entra em ação.
-
-Mas apenas se:
-
-- A fase anterior falhou
-- Existem poucos candidatos
-- A identidade da página é válida
-
-A IA então decide qual candidato faz mais sentido.
-
----
-
-## 🚨 Quando uma URL é rejeitada?
-
-O sistema considera inválida quando:
-
-- A página retorna erro 404
-- O título contém "Page not found"
-- O conteúdo indica erro real
-- O site não retorna uma página válida
-
-Nesses casos, o processo é interrompido com uma mensagem clara.
-
----
-
-## 🏗 Estrutura do Projeto
-
-phase1/ → Análise da URL
-phase2/ → Busca no snapshot do Notion
-phase3/ → Desempate com IA
-domain/ → Tipos e estruturas
-utils/ → Funções auxiliares
-
-Arquitetura modular, separando responsabilidade por fase.
-
----
-
-## 📌 Versão Estável
-
-Tag congelada: v1.0.6-hard404-stable
-
-
-Essa versão:
-
-- ✅ Detecta 404 corretamente
-- ✅ Não deixa IA rodar quando não deve
-- ✅ Resolve match exato corretamente
-- ✅ Build estável
-
----
-
-## 🔮 Próximo Passo
-
-Interface web offline para uso amigável, sem depender de linha de comando.
-
----
-
-## 🧩 Em resumo
-
-O TS4 Mod Analyzer:
-
-> Recebe uma URL  
-> Descobre qual mod ela representa  
-> Procura no seu Notion  
-> E decide com confiança se encontrou ou não  
-
-Sem duplicação.  
-Sem suposições soltas.  
-Sem caos.
-
----
-
-✨ Projeto pessoal focado em organização, precisão e automação, criado por Akin (@UnpaidSimmer).
-# v1.1.1
 </file>
 
 <file path="src/cache/aiDecisionCache.ts">
@@ -28704,35 +28938,174 @@ export class AiDecisionCache {
 }
 </file>
 
-<file path=".gitignore">
-# Secrets
-.env
+<file path="README.md">
+# 🧠 TS4 Mod Analyzer
 
-# Caches
-.cache/
-.cache/*
+> Um detetive automatizado para identificar mods do The Sims 4 dentro do seu banco do Notion a partir de uma URL.
 
-# Node.js
-node_modules/
-dist/
-*.log
+---
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
+## ✨ O que é isso?
 
-# OS
-.DS_Store
-Thumbs.db
-.DS_Store?
+O **TS4 Mod Analyzer** recebe a URL de um mod e descobre automaticamente se esse mod já existe no banco de dados do Notion.
 
-# Repomix
-repomix-output.xml
+Ele não apenas compara links — ele analisa nomes, títulos, criadores e padrões para tomar uma decisão inteligente.
 
-# Testes
-*.test.*
+---
+
+## 🎯 Objetivo
+
+Gerenciar muitos mods manualmente é caótico.
+
+Esse projeto foi criado para:
+
+- 🔎 Verificar se um mod já está cadastrado
+- 🚫 Evitar duplicatas
+- 📚 Organizar sua base no Notion
+- 🤖 Tomar decisões consistentes automaticamente
+- 🧩 Resolver ambiguidades com IA quando necessário
+
+---
+
+## 🧠 Como ele pensa?
+
+O sistema funciona em etapas, como um funil de decisão.
+
+---
+
+### 🟢 Phase 0 — Match direto
+
+Primeiro ele verifica:
+
+> Essa URL já existe exatamente igual no snapshot do Notion?
+
+Se sim → ✅ Encontrado imediatamente.
+
+Sem análise extra.
+
+---
+
+### 🟡 Phase 1 — Análise da página
+
+Se não houver match direto, ele:
+
+- Abre a página
+- Lê o título
+- Extrai metadados públicos
+- Analisa o slug da URL
+- Detecta se a página é inválida (ex: 404)
+
+Se a página for inválida, o processo é interrompido.
+
+---
+
+### 🟠 Phase 2 — Busca inteligente
+
+Aqui começa a parte interessante.
+
+O sistema compara:
+
+- Nome do mod
+- Criador
+- Tokens do título
+- Palavras do slug
+- Domínio da URL
+
+Ele calcula uma pontuação de similaridade.
+
+Se a confiança for alta → 🎯 Match encontrado.  
+Se houver dúvida → passa para a próxima etapa.
+
+---
+
+### 🔵 Phase 3 — Desempate com IA
+
+Quando há poucos candidatos muito parecidos, a IA entra em ação.
+
+Mas apenas se:
+
+- A fase anterior falhou
+- Existem poucos candidatos
+- A identidade da página é válida
+
+A IA então decide qual candidato faz mais sentido.
+
+---
+
+## 🚨 Quando uma URL é rejeitada?
+
+O sistema considera inválida quando:
+
+- A página retorna erro 404
+- O título contém "Page not found"
+- O conteúdo indica erro real
+- O site não retorna uma página válida
+
+Nesses casos, o processo é interrompido com uma mensagem clara.
+
+---
+
+## 🏗 Estrutura do Projeto
+
+phase1/ → Análise da URL
+phase2/ → Busca no snapshot do Notion
+phase3/ → Desempate com IA
+domain/ → Tipos e estruturas
+utils/ → Funções auxiliares
+
+Arquitetura modular, separando responsabilidade por fase.
+
+---
+
+## 📌 Versão Estável
+
+Tag congelada: v1.0.6-hard404-stable
+
+
+Essa versão:
+
+- ✅ Detecta 404 corretamente
+- ✅ Não deixa IA rodar quando não deve
+- ✅ Resolve match exato corretamente
+- ✅ Build estável
+
+---
+
+
+## 🌐 Interface web (mostly offline)
+
+Agora o projeto inclui uma interface web local para uso sem linha de comando:
+
+1. `npm run build`
+2. `npm run web:start`
+3. Abra `http://localhost:4173`
+
+Características:
+- Reaproveita o pipeline atual (Phase 0 → 3) sem duplicar lógica
+- Executa análise local via CLI (`--json`)
+- Mostra status inequívoco (`FOUND`, `NOTFOUND`, `AMBIGUOUS`, `REJECTED_404`)
+- Indica quando a decisão veio de IA (`PHASE_3`)
+- Oferece downloads de cache/logs para auditoria
+
+---
+
+## 🧩 Em resumo
+
+O TS4 Mod Analyzer:
+
+> Recebe uma URL  
+> Descobre qual mod ela representa  
+> Procura no seu Notion  
+> E decide com confiança se encontrou ou não  
+
+Sem duplicação.  
+Sem suposições soltas.  
+Sem caos.
+
+---
+
+✨ Projeto pessoal focado em organização, precisão e automação, criado por Akin (@UnpaidSimmer).
+# v1.1.1
 </file>
 
 <file path="scripts/mergeNotionPagesIntoSnapshot.ts">
@@ -29991,7 +30364,9 @@ export async function analyzeUrl(url: string): Promise<Identity> {
     "build": "tsc",
     "start": "node dist/src/main.js",
     "pull:notionsync": "node scripts/fetchAnalyzerNotionSync.mjs",
-    "merge:notion": "node --loader ts-node/esm --no-warnings scripts/mergeNotionPagesIntoSnapshot.ts"
+    "merge:notion": "node --loader ts-node/esm --no-warnings scripts/mergeNotionPagesIntoSnapshot.ts",
+    "web:start": "node dist/src/web/server.js",
+    "web:dev": "node --loader ts-node/esm --no-warnings src/web/server.ts"
   },
   "dependencies": {
     "cheerio": "^1.0.0-rc.12",

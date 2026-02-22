@@ -1,5 +1,6 @@
-import http from 'node:http';
+import http, { IncomingMessage, ServerResponse } from 'node:http';
 import { promises as fs } from 'node:fs';
+import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { URL } from 'node:url';
 import { spawn } from 'node:child_process';
@@ -7,7 +8,6 @@ import { spawn } from 'node:child_process';
 const PORT = Number(process.env.WEB_PORT ?? 4173);
 const HOST = process.env.WEB_HOST ?? '0.0.0.0';
 const analyzerEntry = path.resolve(process.cwd(), 'dist/src/main.js');
-const inlineFaviconSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff3fb0"/><stop offset="1" stop-color="#f02bd2"/></linearGradient></defs><circle cx="32" cy="32" r="30" fill="url(#g)"/><text x="50%" y="54%" text-anchor="middle" dominant-baseline="middle" font-size="30">💵</text></svg>`;
 
 const downloadableFiles: Record<string, { filePath: string; mime: string }> = {
   'notioncache.json': { filePath: path.resolve(process.cwd(), 'snapshot.json'), mime: 'application/json' },
@@ -23,7 +23,7 @@ const html = `<!doctype html>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>TS4 Mod Analyzer</title>
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,${encodeURIComponent(inlineFaviconSvg)}" />
+  <link rel="icon" href="/favicon.ico" />
   <style>
     :root {
       --card-bg: rgba(248, 248, 248, 0.9);
@@ -290,6 +290,21 @@ const server = http.createServer(async (req, res) => {
   }
 
   const requestUrl = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);
+
+    // favicon
+  if (requestUrl.pathname === '/favicon.ico') {
+    const filePath = path.join(process.cwd(), 'public', 'favicon.ico');
+    const stream = createReadStream(filePath);
+    res.writeHead(200, { 'Content-Type': 'image/x-icon' });
+    stream.pipe(res);
+    return;
+  }
+
+  if (requestUrl.pathname === '/') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+    return;
+  }
 
   if (requestUrl.pathname === '/') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });

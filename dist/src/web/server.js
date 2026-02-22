@@ -7,7 +7,6 @@ import { spawn } from 'node:child_process';
 const PORT = Number(process.env.WEB_PORT ?? 4173);
 const HOST = process.env.WEB_HOST ?? '0.0.0.0';
 const analyzerEntry = path.resolve(process.cwd(), 'dist/src/main.js');
-const inlineFaviconSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff3fb0"/><stop offset="1" stop-color="#f02bd2"/></linearGradient></defs><circle cx="32" cy="32" r="30" fill="url(#g)"/><text x="50%" y="54%" text-anchor="middle" dominant-baseline="middle" font-size="30">💵</text></svg>`;
 const downloadableFiles = {
     'notioncache.json': { filePath: path.resolve(process.cwd(), 'snapshot.json'), mime: 'application/json' },
     'matchcache.json': { filePath: path.resolve(process.cwd(), '.cache/lookup-cache.v2.json'), mime: 'application/json' },

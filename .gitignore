@@ -1,0 +1,28 @@
+# Secrets
+.env
+
+# Caches
+.cache/
+.cache/*
+
+# Node.js
+node_modules/
+dist/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+.DS_Store?
+
+# Repomix
+repomix-output.xml
+
+# Testes
+*.test.*

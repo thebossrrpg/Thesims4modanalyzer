@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 const PORT = Number(process.env.WEB_PORT ?? 4173);
 const HOST = process.env.WEB_HOST ?? '0.0.0.0';
 const analyzerEntry = path.resolve(process.cwd(), 'dist/src/main.js');
+const inlineFaviconSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff3fb0"/><stop offset="1" stop-color="#f02bd2"/></linearGradient></defs><circle cx="32" cy="32" r="30" fill="url(#g)"/><text x="50%" y="54%" text-anchor="middle" dominant-baseline="middle" font-size="30">💵</text></svg>`;
 
 const downloadableFiles: Record<string, { filePath: string; mime: string }> = {
   'notioncache.json': { filePath: path.resolve(process.cwd(), 'snapshot.json'), mime: 'application/json' },
@@ -20,52 +21,180 @@ const html = `<!doctype html>
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>TS4 Mod Analyzer • Web Offline</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TS4 Mod Analyzer</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,${encodeURIComponent(inlineFaviconSvg)}" />
   <style>
-    body { font-family: Inter, system-ui, Arial, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; background: #0b0f17; color: #ecf1ff; }
-    h1 { margin-bottom: .5rem; }
-    .card { background:#141b2a; border:1px solid #26324c; border-radius: 10px; padding: 1rem; margin-bottom: 1rem; }
-    input, button { padding: .7rem .8rem; border-radius: 8px; border:1px solid #33466f; }
-    input { width: 100%; background:#0d1422; color:#fff; margin-bottom: .75rem; }
-    button { background:#2d7fff; color:white; font-weight:600; cursor:pointer; }
-    pre { white-space: pre-wrap; background:#0d1422; border-radius:8px; padding: .8rem; overflow:auto; }
-    .muted { color:#8fa3cc; font-size:.95rem; }
-    .row { display:flex; gap:.5rem; flex-wrap: wrap; }
-    a { color:#84b3ff; }
-    .ok { color:#77ffb0; } .warn { color:#ffd479; } .bad { color:#ff8585; }
+    :root {
+      --card-bg: rgba(248, 248, 248, 0.9);
+      --text: #23242a;
+      --muted: #6f7280;
+      --btn-grad: linear-gradient(90deg, #6282ff 0%, #7646b8 100%);
+      --bg-grad: linear-gradient(120deg, #6d8fff 0%, #7f5eb8 100%);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      color: var(--text);
+      background: var(--bg-grad);
+      display: grid;
+      place-items: center;
+      padding: 16px;
+    }
+
+    .wrapper {
+      width: 100%;
+      max-width: 560px;
+      background: var(--card-bg);
+      border-radius: 14px;
+      box-shadow: 0 20px 40px rgba(16, 17, 26, 0.25);
+      padding: 28px 28px 20px;
+      backdrop-filter: blur(2px);
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 40px;
+      letter-spacing: 0.2px;
+    }
+
+    .subtitle {
+      margin: 0 0 22px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    label {
+      display: block;
+      font-size: 14px;
+      margin-bottom: 8px;
+      color: #44475a;
+      font-weight: 600;
+    }
+
+    input {
+      width: 100%;
+      padding: 11px 12px;
+      border: 1px solid #d4d4d9;
+      border-radius: 9px;
+      font-size: 14px;
+      outline: none;
+      margin-bottom: 14px;
+      background: #fff;
+    }
+
+    input:focus { border-color: #6f7ef2; box-shadow: 0 0 0 3px rgba(100, 121, 255, 0.15); }
+
+    button {
+      width: 100%;
+      border: none;
+      border-radius: 9px;
+      padding: 12px;
+      font-size: 15px;
+      font-weight: 700;
+      color: #fff;
+      background: var(--btn-grad);
+      cursor: pointer;
+    }
+
+    pre {
+      margin: 16px 0 8px;
+      white-space: pre-wrap;
+      border-radius: 9px;
+      background: #fff;
+      border: 1px solid #e1e3eb;
+      padding: 10px 12px;
+      min-height: 86px;
+      max-height: 190px;
+      overflow: auto;
+      color: #2f3342;
+    }
+
+    .ia-note {
+      margin: 8px 0 0;
+      color: #555d7a;
+      font-size: 13px;
+    }
+
+    .downloads {
+      margin-top: 14px;
+      border-top: 1px solid #d7d9e2;
+      padding-top: 12px;
+      display: grid;
+      gap: 8px;
+      font-size: 13px;
+    }
+
+    .download-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      color: #545a73;
+    }
+
+    .download-row a {
+      color: #4f56c6;
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    .footer {
+      margin-top: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-size: 12px;
+      color: #777b8f;
+    }
+
+    .footer-icon {
+      width: 16px;
+      height: 16px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, #ff3fb0, #f02bd2);
+      display: inline-grid;
+      place-items: center;
+      color: #fff;
+      font-size: 11px;
+    }
   </style>
 </head>
 <body>
-  <h1>🧠 TS4 Mod Analyzer</h1>
-  <p class="muted">Interface web local (mostly offline). Usa snapshot/caches locais e executa o pipeline existente via CLI.</p>
+  <main class="wrapper">
+    <h1>TS4 Mod Analyzer</h1>
+    <p class="subtitle">Interface local (mostly offline) com pipeline canônico Phase 0 → Phase 3.</p>
 
-  <div class="card">
-    <label for="url">URL do mod</label>
-    <input id="url" type="url" placeholder="https://..." />
+    <label for="url">URL do Mod</label>
+    <input id="url" type="url" placeholder="https://www.patreon.com/posts/ultimate-pack-123456" />
     <button id="analyze">Analisar</button>
-    <p class="muted" id="ia-note"></p>
-  </div>
 
-  <div class="card">
-    <strong>Resumo</strong>
     <pre id="summary">Aguardando análise.</pre>
-  </div>
+    <p class="ia-note" id="ia-note"></p>
 
-  <div class="card">
-    <strong>Downloads de cache</strong>
-    <div class="row">
-      <a href="/download/notioncache.json">notioncache.json</a>
-      <a href="/download/matchcache.json">matchcache.json</a>
-      <a href="/download/notfoundcache.json">notfoundcache.json</a>
-    </div>
-    <br/>
-    <strong>Downloads de logs</strong>
-    <div class="row">
-      <a href="/download/decisionlog.html">decisionlog.html</a>
-      <a href="/download/ialog.html">ialog.html</a>
-    </div>
-  </div>
+    <section class="downloads" aria-label="Downloads de auditoria">
+      <div><strong>Downloads de cache:</strong></div>
+      <div class="download-row">
+        <a href="/download/notioncache.json">notioncache.json</a>
+        <a href="/download/matchcache.json">matchcache.json</a>
+        <a href="/download/notfoundcache.json">notfoundcache.json</a>
+      </div>
+      <div><strong>Downloads de logs:</strong></div>
+      <div class="download-row">
+        <a href="/download/decisionlog.html">decisionlog.html</a>
+        <a href="/download/ialog.html">ialog.html</a>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <span class="footer-icon">💵</span>
+      <span>Criado por Akin UnpaidSimmer • v1.0.5</span>
+    </footer>
+  </main>
 
   <script>
     const btn = document.getElementById('analyze');

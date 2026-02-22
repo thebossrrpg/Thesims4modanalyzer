@@ -1,8 +1,0 @@
-node_modules/
-dist/
-.env
-.DS_Store
-analyzer_notionsync.json
-node
-thesims4modanalyzer@0.1.0
-repomix-output.xml

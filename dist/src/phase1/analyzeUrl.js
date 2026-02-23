@@ -20,7 +20,7 @@ const BLOCKED_PATTERNS = /just a moment|cloudflare|access denied|checking your b
 const providerState = {
     ogWebApi: { blockedUntilMs: 0 },
     localOgs: { blockedUntilMs: 0 },
-    OpenGraphIo: { blockedUntilMs: 0 },
+    openGraphXyz: { blockedUntilMs: 0 },
     iframely: { blockedUntilMs: 0 },
     microlink: { blockedUntilMs: 0 }
 };
@@ -341,7 +341,7 @@ async function tryLocalOgs(url) {
     }
 }
 // ✅ NOVO — OpenGraph.xyz (entre LocalOgs e Iframely)
-async function tryOpenGraphIo(url) {
+async function tryOpenGraphXyz(url) {
     try {
         const ogUrl = `https://www.opengraph.xyz/url/${encodeURIComponent(url)}`;
         const html = await fetchHtml(ogUrl);
@@ -442,13 +442,13 @@ async function unfurlBlocked(url) {
         }
         cooldown("localOgs", 2 * 60_000);
     }
-    if (canTry("OpenGraphIo")) {
-        const meta = await tryOpenGraphIo(url);
+    if (canTry("openGraphXyz")) {
+        const meta = await tryOpenGraphXyz(url);
         if (meta) {
             setCachedUnfurl(url, meta, 6 * 60 * 60_000);
             return meta;
         }
-        cooldown("OpenGraphIo", 2 * 60_000);
+        cooldown("openGraphXyz", 2 * 60_000);
     }
     if (canTry("iframely")) {
         const meta = await tryIframely(url);
@@ -535,4 +535,3 @@ export async function analyzeUrl(url) {
     }
     return identity;
 }
-

@@ -1,10 +1,9 @@
-// src/phase3/aiDisambiguate.ts (v3.2 - GATE isBlocked REMOVIDO)
+// src/phase3/aiDisambiguate.ts (v4.0 - Embeddings Xenova all-MiniLM-L6-v2)
 
 import type { Identity } from '../domain/identity.js';
 import type { NotionPage } from '../domain/snapshot.js';
-
-const HF_TOKEN = process.env.HF_TOKEN || '';
-const HF_API_URL = 'https://router.huggingface.co/hf-inference/models/facebook/bart-large-mnli';
+import { getOrCreateEmbedding, cosineSimilarity } from '../embedding/embeddingEngine.js';
+import { buildIdentityText, buildCandidateText } from '../embedding/textCanonicalizer.js';
 
 export interface AIDisambiguationResult {
   matchedIndex: number;
@@ -19,31 +18,33 @@ export interface AIDisambiguationResult {
  */
 export function isIdentityValidForAI(identity: Identity): boolean {
   const title = identity.pageTitle || identity.ogTitle || '';
-  
+
   // Guard 1: Título vazio ou muito curto
   if (title.length < 5) {
     console.log('⚠️ [Phase 3 Gate] Identity rejected: title too short');
     return false;
   }
-  
+
   // Guard 2: Só números/pontuação (lixo)
   const cleanTitle = title.replace(/[^\w\s]/g, '').trim();
   if (/^\d+$/.test(cleanTitle)) {
     console.log('⚠️ [Phase 3 Gate] Identity rejected: title is only numbers');
     return false;
   }
-  
+
   // Guard 3: Muito poucos caracteres alfabéticos (< 30%)
   const alphaCount = (title.match(/[a-zA-Z]/g) || []).length;
   const alphaRatio = alphaCount / title.length;
-  
+
   if (alphaRatio < 0.3) {
-    console.log(`⚠️ [Phase 3 Gate] Identity rejected: too few letters (${(alphaRatio * 100).toFixed(0)}%)`);
+    console.log(
+      `⚠️ [Phase 3 Gate] Identity rejected: too few letters (${(alphaRatio * 100).toFixed(0)}%)`
+    );
     return false;
   }
-  
+
   // Gate 4 REMOVIDO: isBlocked não importa se o título é válido!
-  
+
   console.log('✅ [Phase 3 Gate] Identity is valid for AI');
   return true;
 }
@@ -52,127 +53,91 @@ export async function aiDisambiguate(
   identity: Identity,
   candidates: NotionPage[]
 ): Promise<AIDisambiguationResult> {
-  
   if (candidates.length === 0) {
-    return {
-      matchedIndex: -1,
-      confidence: 0,
-      reason: 'No candidates provided'
-    };
+    return { matchedIndex: -1, confidence: 0, reason: 'No candidates provided' };
   }
-  
+
   if (candidates.length === 1) {
+    // ainda respeitamos threshold mínimo
+    return await disambiguateSingle(identity, candidates[0]);
+  }
+
+  return await disambiguateMultiple(identity, candidates);
+}
+
+async function disambiguateSingle(
+  identity: Identity,
+  candidate: NotionPage
+): Promise<AIDisambiguationResult> {
+  const idText = buildIdentityText(identity);
+  const candText = buildCandidateText(candidate);
+
+  const [idEmb, candEmb] = await Promise.all([
+    getOrCreateEmbedding(idText),
+    getOrCreateEmbedding(candText),
+  ]);
+
+  const score = cosineSimilarity(idEmb, candEmb);
+
+  const T_CONFIRM = 0.7; // calibrável
+
+  if (score >= T_CONFIRM) {
     return {
       matchedIndex: 0,
-      confidence: 1.0,
-      reason: 'Only one candidate available'
+      confidence: score,
+      reason: `Single candidate confirmed by embedding similarity ${(score * 100).toFixed(1)}%`,
+      rawResponse: JSON.stringify({ idText, candText, score }),
     };
   }
-  
-  console.log('🤖 [Phase 3] Calling Hugging Face BART-MNLI...');
-  
-  const inputText = buildInputText(identity);
-  const candidateLabels = candidates.map((c, i) => {
-    const title = c.title || c.filename || 'Unknown';
-    const url = c.url || '';
-    let domain = '';
-    try {
-      domain = new URL(url).hostname.replace('www.', '');
-    } catch {}
-    return `${title} from ${domain}`;
-  });
-  
-  try {
-    const response = await fetch(HF_API_URL, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${HF_TOKEN}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        inputs: inputText,
-        parameters: {
-          candidate_labels: candidateLabels
-        }
-      })
-    });
-    
-    if (!response.ok) {
-      const error = await response.text();
-      console.error('❌ [Phase 3] HF API error:', error);
-      return {
-        matchedIndex: -1,
-        confidence: 0,
-        reason: `HF API error: ${response.status}`
-      };
-    }
-    
-    const data = await response.json();
-    console.log('🤖 [Phase 3] BART response:', JSON.stringify(data, null, 2));
-    
-    const result = parseBARTResponse(data, candidateLabels, candidates);
-    result.rawResponse = JSON.stringify(data);
-    
-    return result;
-    
-  } catch (error) {
-    console.error('❌ [Phase 3] HF API call failed:', error);
-    return {
-      matchedIndex: -1,
-      confidence: 0,
-      reason: `API call failed: ${error}`
-    };
-  }
-}
 
-function buildInputText(identity: Identity): string {
-  const title = identity.pageTitle || identity.ogTitle || '';
-  const domain = identity.domain || '';
-  
-  return `${title} from ${domain}`;
-}
-
-function parseBARTResponse(
-  data: any,
-  candidateLabels: string[],
-  candidates: NotionPage[]
-): AIDisambiguationResult {
-  if (!Array.isArray(data) || data.length === 0) {
-    return {
-      matchedIndex: -1,
-      confidence: 0,
-      reason: 'Invalid BART response format'
-    };
-  }
-  
-  const bestMatch = data[0];
-  const bestScore = bestMatch.score;
-  const bestLabel = bestMatch.label;
-  
-  const matchedIndex = candidateLabels.indexOf(bestLabel);
-  
-  if (matchedIndex === -1) {
-    return {
-      matchedIndex: -1,
-      confidence: 0,
-      reason: 'Could not match BART label to candidate'
-    };
-  }
-  
-  // Threshold: score precisa ser ≥ 55%
-  if (bestScore < 0.55) {
-    return {
-      matchedIndex: -1,
-      confidence: bestScore,
-      reason: `Best match score too low: ${(bestScore * 100).toFixed(1)}%`
-    };
-  }
-  
-  const candidateTitle = candidates[matchedIndex].title || candidates[matchedIndex].filename;
-  
   return {
-    matchedIndex,
-    confidence: bestScore,
-    reason: `BART matched "${candidateTitle}" with ${(bestScore * 100).toFixed(1)}% confidence`
+    matchedIndex: -1,
+    confidence: score,
+    reason: `Single candidate similarity too low: ${(score * 100).toFixed(1)}%`,
+    rawResponse: JSON.stringify({ idText, candText, score }),
+  };
+}
+
+async function disambiguateMultiple(
+  identity: Identity,
+  candidates: NotionPage[]
+): Promise<AIDisambiguationResult> {
+  const idText = buildIdentityText(identity);
+  const idEmb = await getOrCreateEmbedding(idText);
+
+  const scores = await Promise.all(
+    candidates.map(async (c, idx) => {
+      const text = buildCandidateText(c);
+      const emb = await getOrCreateEmbedding(text);
+      return { idx, text, score: cosineSimilarity(idEmb, emb) };
+    })
+  );
+
+  scores.sort((a, b) => b.score - a.score);
+
+  const top1 = scores[0];
+  const top2 = scores[1] ?? null;
+
+  const T_HIGH = 0.75;
+  const GAP = 0.1;
+
+  if (top1.score >= T_HIGH && (!top2 || top1.score - top2.score >= GAP)) {
+    return {
+      matchedIndex: top1.idx,
+      confidence: top1.score,
+      reason: `Embedding matched candidate #${top1.idx} with ${(top1.score * 100).toFixed(1)}% similarity; gap ${(
+        top2 ? (top1.score - top2.score) * 100 : 0
+      ).toFixed(1)}%`,
+      rawResponse: JSON.stringify({ idText, scores }),
+    };
+  }
+
+  return {
+    matchedIndex: -1,
+    confidence: top1.score,
+    reason: `Embedding ambiguity: top1 ${(top1.score * 100).toFixed(1)}% vs top2 ${(
+      top2 ? top2.score * 100 : 0
+    ).toFixed(1)}%`,
+    rawResponse: JSON.stringify({ idText, scores }),
   };
 }

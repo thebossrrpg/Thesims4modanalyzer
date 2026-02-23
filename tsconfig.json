@@ -1,16 +1,17 @@
 {
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "verbatimModuleSyntax": true,
-    "outDir": "dist",
-    "rootDir": ".",
-    "strict": true,
-    "types": ["node"],
-    "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true,
-    "allowImportingTsExtensions": false
-  },
-  "include": ["src/**/*"]
+"compilerOptions": {
+"target": "ES2022",
+"module": "NodeNext",
+"moduleResolution": "NodeNext",
+"verbatimModuleSyntax": true,
+"outDir": "dist",
+"rootDir": ".",
+"strict": true,
+"types": ["node"],
+"typeRoots": ["./node_modules/@types"],
+"esModuleInterop": true,
+"forceConsistentCasingInFileNames": true,
+"allowImportingTsExtensions": false
+},
+"include": ["src/**/*"]
 }

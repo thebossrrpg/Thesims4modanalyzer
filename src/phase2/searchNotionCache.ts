@@ -43,11 +43,9 @@ export async function searchNotionCache(
   const candidates: ScoredNotionPage[] = [];
 
   // ========== EXTRAÇÃO DE IDENTIDADE ==========
-  const searchTitle =
-    identity.pageTitle ||
-    identity.ogTitle ||
-    identity.urlSlug ||
-    "";
+  const searchTitle = identity.isBlocked
+  ? `[${identity.domain}] ${identity.urlSlug}`  // Modo structural
+  : (identity.pageTitle || identity.ogTitle || identity.urlSlug || "");
 
   // IMPORTANTE: creator real (quando existir) é identity.creator, não ogSite
   const searchCreator = identity.creator || "";
@@ -56,7 +54,7 @@ export async function searchNotionCache(
   const searchSlug = identity.urlSlug;
 
   // Guard: sem título, impossível buscar
-  if (!searchTitle) {
+  if (!searchTitle && !identity.urlSlug) {
     return {
       decision: { result: "NOTFOUND", phaseResolved: "PHASE_2", reason: "..." },
       candidates: [],
@@ -91,7 +89,7 @@ export async function searchNotionCache(
     );
 
     // Match quase exato de título = retorno imediato
-    if (titleSimilarity >= 0.98) {
+    if (titleSimilarity >= 0.98 && !identity.isBlocked) {
       console.log("✅ [Phase 2] Near-exact title match:", notionTitle);
 
       const immediateDecision: Decision = {
@@ -120,17 +118,17 @@ export async function searchNotionCache(
       if (union > 0) {
         const tokenOverlapScore = overlap / union; // Jaccard
         if (tokenOverlapScore >= 0.50) {
-          score += tokenOverlapScore * W_TITLE;
+          score += tokenOverlapScore * W_TITLE * (identity.isBlocked ? 0 : 1); // bloqueados não ganham tanto do título
           reasons.push(`tokens:${(tokenOverlapScore * 100).toFixed(0)}% (${overlap}/${union})`);
         } else {
-          score += titleSimilarity * W_TITLE;
+          score += titleSimilarity * W_TITLE * (identity.isBlocked ? 0 : 1); // se token overlap baixo, volta pro Levenshtein puro (mas bloqueados não ganham tanto)
           if (titleSimilarity > 0.40) reasons.push(`title:${(titleSimilarity * 100).toFixed(0)}%`);
         }
       } else {
-        score += titleSimilarity * W_TITLE;
+        score += titleSimilarity * W_TITLE * (identity.isBlocked ? 0 : 1); // sem overlap, volta pro Levenshtein puro
       }
     } else {
-      score += titleSimilarity * W_TITLE;
+      score += titleSimilarity * W_TITLE * (identity.isBlocked ? 0 : 1); // match bom de título, mas bloqueados não ganham tanto
       if (titleSimilarity > 0.40) reasons.push(`title:${(titleSimilarity * 100).toFixed(0)}%`);
     }
 

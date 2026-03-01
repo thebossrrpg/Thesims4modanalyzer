@@ -56,7 +56,8 @@ function printHumanSummary(out) {
             console.log(`🗂️  Notion: ${out.found.pageUrl}`);
     }
     if (out.status === "AMBIGUOUS" && out.ambiguous) {
-        console.log(`⚠️  Candidatos: ${out.ambiguous.pageIds.join(", ")}`);
+        const candidateNames = out.debug?.phase2?.candidatesTop5?.map(c => c.title || c.pageId?.slice(0, 8) || '?') || out.ambiguous.pageIds.slice(0, 3).map(id => id.slice(0, 8));
+        console.log(`⚠️ Candidatos: ${candidateNames.join(", ")}`);
     }
     if (out.status === "REJECTED_404") {
         const r = out.debug.validation.rejected404Reason ?? "(sem motivo)";
@@ -174,7 +175,7 @@ async function enrichCandidatesWithNotionLive(caches, candidates) {
 (async () => {
     // ── VALIDAÇÃO / REJECTED_404 ─────────────────────────────
     const debug = createBaseDebug(inputUrl);
-    if (!inputUrl || !/^https?:\/\//i.test(inputUrl)) {
+    if (!inputUrl || inputUrl.trim().length < 10) {
         setRejected404(debug, "url_not_http");
         const out = {
             startedAt,

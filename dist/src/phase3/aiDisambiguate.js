@@ -1,6 +1,6 @@
-// src/phase3/aiDisambiguate.ts (v3.2 - GATE isBlocked REMOVIDO)
-const HF_TOKEN = process.env.HF_TOKEN || '';
-const HF_API_URL = 'https://router.huggingface.co/hf-inference/models/facebook/bart-large-mnli';
+// src/phase3/aiDisambiguate.ts (v4.1 - Embeddings Xenova all-MiniLM-L6-v2 ✅ INTEGRADO)
+import { getOrCreateEmbedding, cosineSimilarity } from '../embedding/embeddingEngine.js';
+import { buildIdentityText, buildCandidateText } from '../embedding/textCanonicalizer.js';
 /**
  * Verifica se a identidade é válida o suficiente pra usar IA
  * PATCH: Gate isBlocked REMOVIDO - se título é bom, não importa se bloqueado
@@ -30,106 +30,68 @@ export function isIdentityValidForAI(identity) {
     return true;
 }
 export async function aiDisambiguate(identity, candidates) {
+    // ✅ NOVO: Gate identity antes de embedding
+    if (!isIdentityValidForAI(identity)) {
+        return { matchedIndex: -1, confidence: 0, reason: 'Identity too weak for AI' };
+    }
     if (candidates.length === 0) {
-        return {
-            matchedIndex: -1,
-            confidence: 0,
-            reason: 'No candidates provided'
-        };
+        return { matchedIndex: -1, confidence: 0, reason: 'No candidates provided' };
     }
     if (candidates.length === 1) {
+        // ainda respeitamos threshold mínimo
+        return await disambiguateSingle(identity, candidates[0]);
+    }
+    return await disambiguateMultiple(identity, candidates);
+}
+async function disambiguateSingle(identity, candidate) {
+    const idText = buildIdentityText(identity);
+    const candText = buildCandidateText(candidate);
+    const [idEmb, candEmb] = await Promise.all([
+        getOrCreateEmbedding(idText),
+        getOrCreateEmbedding(candText),
+    ]);
+    const score = cosineSimilarity(idEmb, candEmb);
+    const T_CONFIRM = 0.7; // calibrável
+    if (score >= T_CONFIRM) {
         return {
             matchedIndex: 0,
-            confidence: 1.0,
-            reason: 'Only one candidate available'
+            confidence: score,
+            reason: `Single candidate confirmed by embedding similarity ${(score * 100).toFixed(1)}%`,
+            rawResponse: JSON.stringify({ idText, candText, score }),
         };
     }
-    console.log('🤖 [Phase 3] Calling Hugging Face BART-MNLI...');
-    const inputText = buildInputText(identity);
-    const candidateLabels = candidates.map((c, i) => {
-        const title = c.title || c.filename || 'Unknown';
-        const url = c.url || '';
-        let domain = '';
-        try {
-            domain = new URL(url).hostname.replace('www.', '');
-        }
-        catch { }
-        return `${title} from ${domain}`;
-    });
-    try {
-        const response = await fetch(HF_API_URL, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${HF_TOKEN}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                inputs: inputText,
-                parameters: {
-                    candidate_labels: candidateLabels
-                }
-            })
-        });
-        if (!response.ok) {
-            const error = await response.text();
-            console.error('❌ [Phase 3] HF API error:', error);
-            return {
-                matchedIndex: -1,
-                confidence: 0,
-                reason: `HF API error: ${response.status}`
-            };
-        }
-        const data = await response.json();
-        console.log('🤖 [Phase 3] BART response:', JSON.stringify(data, null, 2));
-        const result = parseBARTResponse(data, candidateLabels, candidates);
-        result.rawResponse = JSON.stringify(data);
-        return result;
-    }
-    catch (error) {
-        console.error('❌ [Phase 3] HF API call failed:', error);
-        return {
-            matchedIndex: -1,
-            confidence: 0,
-            reason: `API call failed: ${error}`
-        };
-    }
-}
-function buildInputText(identity) {
-    const title = identity.pageTitle || identity.ogTitle || '';
-    const domain = identity.domain || '';
-    return `${title} from ${domain}`;
-}
-function parseBARTResponse(data, candidateLabels, candidates) {
-    if (!Array.isArray(data) || data.length === 0) {
-        return {
-            matchedIndex: -1,
-            confidence: 0,
-            reason: 'Invalid BART response format'
-        };
-    }
-    const bestMatch = data[0];
-    const bestScore = bestMatch.score;
-    const bestLabel = bestMatch.label;
-    const matchedIndex = candidateLabels.indexOf(bestLabel);
-    if (matchedIndex === -1) {
-        return {
-            matchedIndex: -1,
-            confidence: 0,
-            reason: 'Could not match BART label to candidate'
-        };
-    }
-    // Threshold: score precisa ser ≥ 55%
-    if (bestScore < 0.55) {
-        return {
-            matchedIndex: -1,
-            confidence: bestScore,
-            reason: `Best match score too low: ${(bestScore * 100).toFixed(1)}%`
-        };
-    }
-    const candidateTitle = candidates[matchedIndex].title || candidates[matchedIndex].filename;
     return {
-        matchedIndex,
-        confidence: bestScore,
-        reason: `BART matched "${candidateTitle}" with ${(bestScore * 100).toFixed(1)}% confidence`
+        matchedIndex: -1,
+        confidence: score,
+        reason: `Single candidate similarity too low: ${(score * 100).toFixed(1)}%`,
+        rawResponse: JSON.stringify({ idText, candText, score }),
+    };
+}
+async function disambiguateMultiple(identity, candidates) {
+    const idText = buildIdentityText(identity);
+    const idEmb = await getOrCreateEmbedding(idText);
+    const scores = await Promise.all(candidates.slice(0, 5).map(async (c, idx) => {
+        const text = buildCandidateText(c);
+        const emb = await getOrCreateEmbedding(text);
+        return { idx, text, score: cosineSimilarity(idEmb, emb) };
+    }));
+    scores.sort((a, b) => b.score - a.score);
+    const top1 = scores[0];
+    const top2 = scores[1] ?? null;
+    const T_HIGH = 0.75;
+    const GAP = 0.1;
+    if (top1.score >= T_HIGH && (!top2 || top1.score - top2.score >= GAP)) {
+        return {
+            matchedIndex: top1.idx,
+            confidence: top1.score,
+            reason: `Embedding matched candidate #${top1.idx} with ${(top1.score * 100).toFixed(1)}% similarity; gap ${(top2 ? (top1.score - top2.score) * 100 : 0).toFixed(1)}%`,
+            rawResponse: JSON.stringify({ idText, scores }),
+        };
+    }
+    return {
+        matchedIndex: -1,
+        confidence: top1.score,
+        reason: `Embedding ambiguity: top1 ${(top1.score * 100).toFixed(1)}% vs top2 ${(top2 ? top2.score * 100 : 0).toFixed(1)}%`,
+        rawResponse: JSON.stringify({ idText, scores }),
     };
 }

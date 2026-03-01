@@ -119,3 +119,5 @@ export async function getOrCreateEmbedding(rawText: string): Promise<EmbeddingVe
 
   return embedding;
 }
+// === FINAL DO ARQUIVO ORIGINAL - ADICIONE APENAS ESTA LINHA ===
+export type { EmbeddingVector, EmbeddingCacheEntry, EmbeddingCacheFile };

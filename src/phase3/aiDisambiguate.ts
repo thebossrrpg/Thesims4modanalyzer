@@ -1,4 +1,4 @@
-// src/phase3/aiDisambiguate.ts (v4.0 - Embeddings Xenova all-MiniLM-L6-v2)
+// src/phase3/aiDisambiguate.ts (v4.1 - Embeddings Xenova all-MiniLM-L6-v2 ✅ INTEGRADO)
 
 import type { Identity } from '../domain/identity.js';
 import type { NotionPage } from '../domain/snapshot.js';
@@ -53,6 +53,12 @@ export async function aiDisambiguate(
   identity: Identity,
   candidates: NotionPage[]
 ): Promise<AIDisambiguationResult> {
+  
+  // ✅ NOVO: Gate identity antes de embedding
+  if (!isIdentityValidForAI(identity)) {
+    return { matchedIndex: -1, confidence: 0, reason: 'Identity too weak for AI' };
+  }
+
   if (candidates.length === 0) {
     return { matchedIndex: -1, confidence: 0, reason: 'No candidates provided' };
   }
@@ -106,7 +112,7 @@ async function disambiguateMultiple(
   const idEmb = await getOrCreateEmbedding(idText);
 
   const scores = await Promise.all(
-    candidates.map(async (c, idx) => {
+    candidates.slice(0, 5).map(async (c, idx) => {  // ✅ OTIMIZAÇÃO: TOP 5 só
       const text = buildCandidateText(c);
       const emb = await getOrCreateEmbedding(text);
       return { idx, text, score: cosineSimilarity(idEmb, emb) };

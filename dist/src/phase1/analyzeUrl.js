@@ -16,7 +16,8 @@ const REQUEST_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9,pt-BR;q=0.8,pt;q=0.7"
 };
 // ✅ CORRETO — tudo em UMA linha
-const BLOCKED_PATTERNS = /just a moment|cloudflare|access denied|checking your browser|challenge-platform|cf-browser-verification|cf-chl|js-challenge|scumbumbo/i;
+// ✅ EXPANDED — Padrões de bloqueio/challenge modernos (incluindo Vercel Security Checkpoint)
+const BLOCKED_PATTERNS = /just a moment|cloudflare|access denied|checking your browser|challenge-platform|cf-browser-verification|cf-chl|js-challenge|scumbumbo|vercel security checkpoint|security checkpoint|attention required|access forbidden|enable javascript|bot detection|human verification|please wait|loading\.\.\.(?!.*\w)/i;
 const providerState = {
     ogWebApi: { blockedUntilMs: 0 },
     localOgs: { blockedUntilMs: 0 },
@@ -208,6 +209,62 @@ function isSuspiciousTitle(title) {
     return /^[A-Z\s!@#$%^&*()]+$/.test(upper) ||
         title.length < 10 ||
         !!title.match(/^[A-Z]{3,}$/);
+}
+/**
+ * Verifica se um título retornado por unfurl ainda é um título de bloqueio/challenge.
+ * Usado para validar se o unfurl realmente "desbloqueou" ou apenas trouxe outro título de challenge.
+ */
+function isBlockedTitle(title) {
+    if (!title)
+        return true; // Sem título = não é útil
+    const titleLower = title.toLowerCase().trim();
+    // Vazio ou muito curto (< 3 chars) = suspeito
+    if (titleLower.length < 3)
+        return true;
+    // Bate BLOCKED_PATTERNS direto
+    if (BLOCKED_PATTERNS.test(titleLower))
+        return true;
+    // Padrões específicos de checkpoint/challenge não cobertos acima
+    const challengeTerms = [
+        'checkpoint',
+        'verification',
+        'verify you',
+        'are you human',
+        'prove you',
+        'robot',
+        'captcha',
+        'rate limit',
+        'too many requests',
+        'suspended',
+        'unavailable',
+        'forbidden',
+        'error 403',
+        'error 503',
+    ];
+    return challengeTerms.some(term => titleLower.includes(term));
+}
+/**
+ * Valida se o metadata retornado por unfurl é realmente útil.
+ * Retorna false se o título ainda é de bloqueio ou genérico demais.
+ */
+/**
+ * Valida se o metadata retornado por unfurl é realmente útil.
+ * Retorna false se o título ainda é de bloqueio ou genérico demais.
+ */
+function isUsefulUnfurlMeta(meta) {
+    if (!meta)
+        return false;
+    // Pega o melhor título disponível
+    const bestTitle = meta.ogTitle || meta.title;
+    // Se o título ainda é de bloqueio, não é útil
+    if (isBlockedTitle(bestTitle)) {
+        return false;
+    }
+    // ✅ CORREÇÃO: boolean explícito
+    const hasTitle = !!(bestTitle?.trim().length ?? 0 >= 3);
+    const hasOgSite = !!(meta.ogSite?.trim().length ?? 0 > 0);
+    // Precisa de pelo menos título OU og:site_name
+    return hasTitle || hasOgSite;
 }
 function isUsefulMeta(meta) {
     const best = meta.ogTitle || meta.title || null;
@@ -517,20 +574,36 @@ export async function analyzeUrl(url) {
     if (isBlocked || isSuspiciousTitle(pageTitle)) {
         console.log('🤖 [Phase 1] Tentando unfurlBlocked()...');
         const meta = await unfurlBlocked(normalizedUrl);
-        if (meta) {
-            identity = {
-                ...identity,
-                pageTitle: meta.ogTitle ?? meta.title ?? identity.pageTitle,
-                ogTitle: meta.ogTitle ?? identity.ogTitle,
-                ogSite: meta.ogSite ?? identity.ogSite,
-                unfurlVia: meta.via,
-                isBlocked: false // Unfurl "desbloqueou"
-            };
-            console.log('✅ [Phase 1] Unfurl sucesso:', identity.pageTitle?.slice(0, 50));
+        // ✅ VALIDAÇÃO: Só aceita unfurl se o metadata for realmente útil
+        if (meta && isUsefulUnfurlMeta(meta)) {
+            const newTitle = meta.ogTitle ?? meta.title;
+            console.log('🧪 [Phase 1] Unfurl retornou:', {
+                title: newTitle?.slice(0, 60),
+                via: meta.via,
+                isBlockedTitle: isBlockedTitle(newTitle)
+            });
+            // Só "desbloqueia" se o título NÃO for de challenge
+            if (!isBlockedTitle(newTitle)) {
+                identity = {
+                    ...identity,
+                    pageTitle: newTitle ?? identity.pageTitle,
+                    ogTitle: meta.ogTitle ?? identity.ogTitle,
+                    ogSite: meta.ogSite ?? identity.ogSite,
+                    unfurlVia: meta.via,
+                    isBlocked: false // ✅ Unfurl desbloqueou com sucesso
+                };
+                console.log('✅ [Phase 1] Unfurl SUCESSO (desbloqueado):', identity.pageTitle?.slice(0, 50));
+            }
+            else {
+                // Unfurl trouxe título de challenge — mantém isBlocked=true
+                identity.unfurlVia = meta.via;
+                console.log('⚠️ [Phase 1] Unfurl trouxe título de challenge, mantendo isBlocked=true');
+            }
         }
         else {
+            // Unfurl falhou ou retornou metadata inútil
             identity.unfurlVia = "fallback";
-            console.log('❌ [Phase 1] Unfurl falhou, usando raw');
+            console.log('❌ [Phase 1] Unfurl falhou ou metadata inútil, usando raw (isBlocked permanece:', isBlocked, ')');
         }
     }
     return identity;

@@ -510,20 +510,26 @@ async function enrichCandidatesWithNotionLive(caches, candidates) {
         console.log("\n🤖 [Phase 3] Gates passed. Enriching candidates via Notion live (if available)...");
         const notionLive = await enrichCandidatesWithNotionLive(caches, phase3Candidates);
         // Agora roda IA em cima dos candidatos enriquecidos
+        // Agora roda IA em cima dos candidatos enriquecidos
         console.log("🤖 [Phase 3] Running AI disambiguation...");
         let aiResult = null;
         try {
-            aiResult = await aiDisambiguate(identity, notionLive.enriched);
+            const aiIdentity = {
+                ...identity,
+                pageTitle: identity.urlSlug || identity.pageTitle,
+                ogTitle: identity.ogTitle || identity.pageTitle || identity.urlSlug || "",
+            };
+            aiResult = await aiDisambiguate(aiIdentity, notionLive.enriched);
         }
         catch (e) {
-            // Sem HF_TOKEN / erro de rede / etc => fallback Phase 2.
+            // fallback Phase 2 (igual seu código)
             const d = phase2Result.decision;
             const errMsg = String(e?.message ?? e ?? "erro_na_ia");
             debug.phase3 = buildPhase3Debug({
                 mode: notionLive.mode,
                 finalCandidates: rescue.plan.mode === "DISAMBIGUATE" ? notionLive.enriched.length : 0,
                 finalCandidatePageIds: rescue.plan.mode === "DISAMBIGUATE"
-                    ? notionLive.enriched.map((c) => String(c.notion_id))
+                    ? notionLive.enriched.map((c) => String(c.notionid || c.notion_id))
                     : undefined,
             });
             debug.phase3.notionApi = { fetchedPages: notionLive.fetchedPages };
@@ -535,7 +541,7 @@ async function enrichCandidatesWithNotionLive(caches, candidates) {
                 reason: `${d.reason ?? ""} | Phase 3 indisponível: ${errMsg}`,
                 debug,
                 ...(d.result === "AMBIGUOUS"
-                    ? { ambiguous: { pageIds: phase2Candidates.map((c) => String(c.notion_id)) } }
+                    ? { ambiguous: { pageIds: phase2Candidates.map((c) => String(c.notionid || c.notion_id)) } }
                     : {}),
             };
             emit(out);

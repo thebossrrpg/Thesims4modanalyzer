@@ -664,44 +664,47 @@ async function enrichCandidatesWithNotionLive(
     const notionLive = await enrichCandidatesWithNotionLive(caches, phase3Candidates);
 
     // Agora roda IA em cima dos candidatos enriquecidos
-    console.log("🤖 [Phase 3] Running AI disambiguation...");
+    // Agora roda IA em cima dos candidatos enriquecidos
+console.log("🤖 [Phase 3] Running AI disambiguation...");
 
-    let aiResult:
-      | { matchedIndex: number; confidence: number; reason: string }
-      | null = null;
+let aiResult: { matchedIndex: number; confidence: number; reason: string } | null = null;
 
-    try {
-      aiResult = await aiDisambiguate(identity, notionLive.enriched);
-    } catch (e: any) {
-      // Sem HF_TOKEN / erro de rede / etc => fallback Phase 2.
-      const d = phase2Result.decision;
-      const errMsg = String(e?.message ?? e ?? "erro_na_ia");
+try {
+  const aiIdentity = {
+    ...identity,
+    pageTitle: identity.urlSlug || identity.pageTitle,
+    ogTitle: identity.ogTitle || identity.pageTitle || identity.urlSlug || "",
+  };
+  aiResult = await aiDisambiguate(aiIdentity, notionLive.enriched);
+} catch (e: any) {
+  // fallback Phase 2 (igual seu código)
+  const d = phase2Result.decision;
+  const errMsg = String(e?.message ?? e ?? "erro_na_ia");
 
-      debug.phase3 = buildPhase3Debug({
-        mode: notionLive.mode,
-        finalCandidates: rescue.plan.mode === "DISAMBIGUATE" ? notionLive.enriched.length : 0,
-        finalCandidatePageIds:
-          rescue.plan.mode === "DISAMBIGUATE"
-            ? notionLive.enriched.map((c: any) => String(c.notion_id))
-            : undefined,
-      });
-      debug.phase3.notionApi = { fetchedPages: notionLive.fetchedPages };
+  debug.phase3 = buildPhase3Debug({
+    mode: notionLive.mode,
+    finalCandidates: rescue.plan.mode === "DISAMBIGUATE" ? notionLive.enriched.length : 0,
+    finalCandidatePageIds: rescue.plan.mode === "DISAMBIGUATE"
+      ? notionLive.enriched.map((c: any) => String(c.notionid || c.notion_id))
+      : undefined,
+  });
+  debug.phase3!.notionApi = { fetchedPages: notionLive.fetchedPages };
 
-      const out: AnalyzerJsonOutput = {
-        startedAt,
-        inputUrl,
-        status: d.result as AnalyzerResultStatus,
-        phaseResolved: d.phaseResolved as PhaseResolved,
-        reason: `${d.reason ?? ""} | Phase 3 indisponível: ${errMsg}`,
-        debug,
-        ...(d.result === "AMBIGUOUS"
-          ? { ambiguous: { pageIds: phase2Candidates.map((c: any) => String(c.notion_id)) } }
-          : {}),
-      };
+  const out: AnalyzerJsonOutput = {
+    startedAt,
+    inputUrl,
+    status: d.result as AnalyzerResultStatus,
+    phaseResolved: d.phaseResolved as PhaseResolved,
+    reason: `${d.reason ?? ""} | Phase 3 indisponível: ${errMsg}`,
+    debug,
+    ...(d.result === "AMBIGUOUS"
+      ? { ambiguous: { pageIds: phase2Candidates.map((c: any) => String(c.notionid || c.notion_id)) } }
+      : {}),
+  };
 
-      emit(out);
-      process.exit(0);
-    }
+  emit(out);
+  process.exit(0);
+}
 
     const aiMatched = aiResult.matchedIndex >= 0 && aiResult.confidence >= AI_THRESHOLD;
 

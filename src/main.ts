@@ -1,4 +1,4 @@
-// src/main.ts — v1.2.0 (Phase 3 wired end-to-end)
+// src/main.ts — v1.3.3 (Phase 3 wired end-to-end)
 //
 // Phase 0/0.5: determinístico no snapshot
 // Phase 1: analyzeUrl -> Identity (hard 404 => REJECTED_404)
@@ -89,8 +89,11 @@ function printHumanSummary(out: AnalyzerJsonOutput): void {
   }
 
   if (out.status === "AMBIGUOUS" && out.ambiguous) {
-    console.log(`⚠️  Candidatos: ${out.ambiguous.pageIds.join(", ")}`);
-  }
+  const candidateNames = out.debug?.phase2?.candidatesTop5?.map(c => 
+  c.title || c.pageId?.slice(0,8) || '?'
+) || out.ambiguous.pageIds.slice(0,3).map(id => id.slice(0,8));
+    console.log(`⚠️ Candidatos: ${candidateNames.join(", ")}`);
+}
 
   if (out.status === "REJECTED_404") {
     const r = out.debug.validation.rejected404Reason ?? "(sem motivo)";
@@ -239,7 +242,7 @@ async function enrichCandidatesWithNotionLive(
 
   const debug: DebugExpander = createBaseDebug(inputUrl);
 
-  if (!inputUrl || !/^https?:\/\//i.test(inputUrl)) {
+  if (!inputUrl || inputUrl.trim().length < 10) {
     setRejected404(debug, "url_not_http");
 
     const out: AnalyzerJsonOutput = {

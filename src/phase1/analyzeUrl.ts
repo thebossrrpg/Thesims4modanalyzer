@@ -1,11 +1,13 @@
-// src/phase1/analyzeUrl.ts — v1.3.0
+// src/phase1/analyzeUrl.ts — v1.3.1
 // ✅ Fixes aplicados:
-// 1. BLOCKED_PATTERNS robusto (scumbumbo, cf-challenge, etc.)
+// 1. BLOCKED_PATTERNS robusto (scumbumbo, cf-challenge, Vercel Security Checkpoint, etc.)
 // 2. detectBlocked() com heurística tamanho + conteúdo
 // 3. tryIframely() sempre se title suspeito (SCUMBUMBO-like)
 // 4. Debug logs [Phase 1] Raw + isBlocked
 // 5. tryLocalOgs() / tryOgWebApi() com try/catch
 // 6. isSuspiciousTitle() para forçar unfurl
+// 7. ✅ Unfurl só "desbloqueia" se meta for realmente útil (anti-challenge)
+// 8. ✅ Correção de precedência em isUsefulUnfurlMeta()
 
 import 'dotenv/config';
 import ogs from "open-graph-scraper";
@@ -28,7 +30,6 @@ const REQUEST_HEADERS = {
   "Accept-Language": "en-US,en;q=0.9,pt-BR;q=0.8,pt;q=0.7"
 };
 
-// ✅ CORRETO — tudo em UMA linha
 // ✅ EXPANDED — Padrões de bloqueio/challenge modernos (incluindo Vercel Security Checkpoint)
 const BLOCKED_PATTERNS = /just a moment|cloudflare|access denied|checking your browser|challenge-platform|cf-browser-verification|cf-chl|js-challenge|scumbumbo|vercel security checkpoint|security checkpoint|attention required|access forbidden|enable javascript|bot detection|human verification|please wait|loading\.\.\.(?!.*\w)/i;
 
@@ -92,10 +93,8 @@ function readIframelyUsage() {
   try {
     const raw = fs.readFileSync(IFRAMELY_USAGE_FILE, "utf-8");
     const data = JSON.parse(raw);
-    if (!data || typeof data !== "object")
-      return { month, hits: 0 };
-    if (data.month !== month)
-      return { month, hits: 0 };
+    if (!data || typeof data !== "object") return { month, hits: 0 };
+    if (data.month !== month) return { month, hits: 0 };
     return {
       month,
       hits: Number.isFinite(data.hits) ? data.hits : 0,
@@ -217,18 +216,18 @@ function extractMetaContent(html: string, key: string): string | null {
 
 // 🔧 ROBUSTO — heurística tamanho + padrões modernos
 function detectBlocked(htmlLower: string, pageTitleLower: string | null): boolean {
-  // Padrões regex
-  if (BLOCKED_PATTERNS.test(htmlLower) || 
-      (pageTitleLower && BLOCKED_PATTERNS.test(pageTitleLower))) {
+  if (BLOCKED_PATTERNS.test(htmlLower) || (pageTitleLower && BLOCKED_PATTERNS.test(pageTitleLower))) {
     return true;
   }
-  
-  // 🔧 NOVO: heurística tamanho + conteúdo suspeito
-  if (htmlLower.length < 5000 ||  // HTML muito curto (bloqueio)
-      (htmlLower.includes('scumbumbo') && pageTitleLower?.match(/^[A-Z]+$/))) {  // SCUMBUMBO pattern
+
+  // heurística adicional
+  if (
+    htmlLower.length < 5000 ||
+    (htmlLower.includes('scumbumbo') && !!pageTitleLower?.match(/^[A-Z]+$/))
+  ) {
     return true;
   }
-  
+
   return false;
 }
 
@@ -237,32 +236,26 @@ function isUselessText(s: string | null | undefined): boolean {
   return BLOCKED_PATTERNS.test(s);
 }
 
-// 🔧 NOVO — detecta títulos suspeitos (SCUMBUMBO-like)
+// 🔧 detecta títulos suspeitos (SCUMBUMBO-like)
 function isSuspiciousTitle(title: string | null): boolean {
   if (!title) return true;
   const upper = title.toUpperCase();
-  return /^[A-Z\s!@#$%^&*()]+$/.test(upper) ||  
-    title.length < 10 ||                     
-    !!title.match(/^[A-Z]{3,}$/);         
+  return /^[A-Z\s!@#$%^&*()]+$/.test(upper) ||
+    title.length < 10 ||
+    !!title.match(/^[A-Z]{3,}$/);
 }
-
 
 /**
  * Verifica se um título retornado por unfurl ainda é um título de bloqueio/challenge.
- * Usado para validar se o unfurl realmente "desbloqueou" ou apenas trouxe outro título de challenge.
  */
 function isBlockedTitle(title: string | null | undefined): boolean {
-  if (!title) return true; // Sem título = não é útil
+  if (!title) return true; // sem título = não é útil
 
   const titleLower = title.toLowerCase().trim();
 
-  // Vazio ou muito curto (< 3 chars) = suspeito
   if (titleLower.length < 3) return true;
-
-  // Bate BLOCKED_PATTERNS direto
   if (BLOCKED_PATTERNS.test(titleLower)) return true;
 
-  // Padrões específicos de checkpoint/challenge não cobertos acima
   const challengeTerms = [
     'checkpoint',
     'verification',
@@ -283,30 +276,23 @@ function isBlockedTitle(title: string | null | undefined): boolean {
   return challengeTerms.some(term => titleLower.includes(term));
 }
 
-
-/**
- * Valida se o metadata retornado por unfurl é realmente útil.
- * Retorna false se o título ainda é de bloqueio ou genérico demais.
- */
 /**
  * Valida se o metadata retornado por unfurl é realmente útil.
  * Retorna false se o título ainda é de bloqueio ou genérico demais.
  */
 function isUsefulUnfurlMeta(meta: UnfurlMeta | null): boolean {
   if (!meta) return false;
-  
-  // Pega o melhor título disponível
+
   const bestTitle = meta.ogTitle || meta.title;
-  
-  // Se o título ainda é de bloqueio, não é útil
+
   if (isBlockedTitle(bestTitle)) {
     return false;
   }
-  
-  // ✅ CORREÇÃO: boolean explícito
-  const hasTitle = !!(bestTitle?.trim().length ?? 0 >= 3);
-  const hasOgSite = !!(meta.ogSite?.trim().length ?? 0 > 0);
-  
+
+  // ✅ correção de precedência
+  const hasTitle = ((bestTitle?.trim().length ?? 0) >= 3);
+  const hasOgSite = ((meta.ogSite?.trim().length ?? 0) > 0);
+
   // Precisa de pelo menos título OU og:site_name
   return hasTitle || hasOgSite;
 }
@@ -378,17 +364,21 @@ function tryNotionIdentity(url: string): Identity | null {
   if (!snapshotPages) return null;
   const needle = normalizeUrlForExactMatch(url);
   if (!needle) return null;
+
   const match = Object.values(snapshotPages as Record<string, { url?: string; filename?: string }>).find((p) => {
     if (!p?.url) return false;
     const pNorm = normalizeUrlForExactMatch(p.url);
     return pNorm === needle;
   });
+
   if (!match || !match.url) return null;
+
   const finalUrl = match.url;
   const parsed = new URL(finalUrl);
   const domain = parsed.hostname.replace(/^www\./, "");
   const urlSlug = buildSlugFromPath(parsed.pathname);
   const title = match.filename?.trim() || null;
+
   return {
     url: finalUrl,
     domain,
@@ -425,8 +415,10 @@ async function tryLocalOgs(url: string): Promise<UnfurlMeta | null> {
       onlyGetOpenGraphInfo: true,
       fetchOptions: { headers: REQUEST_HEADERS }
     });
+
     const r = result?.result;
     if (!r) return null;
+
     const meta = normalizeMeta(
       {
         title: r.ogTitle ?? null,
@@ -435,13 +427,14 @@ async function tryLocalOgs(url: string): Promise<UnfurlMeta | null> {
       },
       "local_ogs"
     );
+
     return isUsefulMeta(meta) ? meta : null;
   } catch {
     return null;
   }
 }
 
-// ✅ NOVO — OpenGraph.xyz (entre LocalOgs e Iframely)
+// ✅ OpenGraph.xyz
 async function tryOpenGraphXyz(url: string): Promise<UnfurlMeta | null> {
   try {
     const ogUrl = `https://www.opengraph.xyz/url/${encodeURIComponent(url)}`;
@@ -452,11 +445,7 @@ async function tryOpenGraphXyz(url: string): Promise<UnfurlMeta | null> {
     const ogSite = extractMetaContent(html, "og:site_name") ?? null;
 
     const meta = normalizeMeta(
-      {
-        title,
-        ogTitle: title,
-        ogSite
-      },
+      { title, ogTitle: title, ogSite },
       "fallback" as const
     );
 
@@ -466,7 +455,7 @@ async function tryOpenGraphXyz(url: string): Promise<UnfurlMeta | null> {
   }
 }
 
-// src/phase1/analyzeUrl.ts — tryIframely (COM API KEY)
+// tryIframely (com API KEY)
 async function tryIframely(url: string): Promise<UnfurlMeta | null> {
   try {
     const apiKey = String(process.env.IFRAMELY_API_KEY ?? "").trim();
@@ -477,9 +466,10 @@ async function tryIframely(url: string): Promise<UnfurlMeta | null> {
       console.log(`❌ Iframely ${res.status}`);
       return null;
     }
+
     const data = await res.json();
     console.log('🔍 Iframely raw:', JSON.stringify(data, null, 2).slice(0, 200));
-    
+
     const meta = normalizeMeta(
       {
         title: data.title ?? data.meta?.title ?? null,
@@ -488,6 +478,7 @@ async function tryIframely(url: string): Promise<UnfurlMeta | null> {
       },
       "iframely"
     );
+
     return isUsefulMeta(meta) ? meta : null;
   } catch (e) {
     console.log('❌ Iframely erro:', e);
@@ -495,19 +486,15 @@ async function tryIframely(url: string): Promise<UnfurlMeta | null> {
   }
 }
 
-// ✅ NOVO — Microlink (depois do Iframely)
-// Integração via parâmetros meta.* (conforme docs)
+// ✅ Microlink
 async function tryMicrolink(url: string): Promise<UnfurlMeta | null> {
   try {
     const base = "https://api.microlink.io/";
     const params = new URLSearchParams();
     params.set("url", url);
-
-    // meta via parâmetros (docs): pede só o que a gente usa
     params.set("meta.title", "true");
     params.set("meta.publisher", "true");
 
-    // opcional: endpoint proxy (para plano/API key), se você usar isso
     const endpoint = String(process.env.MICROLINK_ENDPOINT ?? "").trim();
     if (endpoint) params.set("endpoint", endpoint);
 
@@ -524,11 +511,7 @@ async function tryMicrolink(url: string): Promise<UnfurlMeta | null> {
     const ogSite = data?.publisher ?? null;
 
     const meta = normalizeMeta(
-      {
-        title,
-        ogTitle: title,
-        ogSite
-      },
+      { title, ogTitle: title, ogSite },
       "fallback" as const
     );
 
@@ -542,8 +525,8 @@ async function unfurlBlocked(url: string): Promise<UnfurlMeta | null> {
   const cached = getCachedUnfurl(url);
   if (cached) return cached;
 
-  // Ordem pedida:
-  // 1) OgWebApi → 2) LocalOgs → 3) OpenGraph.xyz → 4) Iframely (com API key) → 5) Microlink
+  // Ordem:
+  // 1) OgWebApi → 2) LocalOgs → 3) OpenGraph.xyz → 4) Iframely → 5) Microlink
 
   if (canTry("ogWebApi")) {
     const meta = await tryOgWebApi(url);
@@ -573,6 +556,10 @@ async function unfurlBlocked(url: string): Promise<UnfurlMeta | null> {
   }
 
   if (canTry("iframely")) {
+    // mantém leitura de uso (se você usar depois)
+    readIframelyUsage();
+    getIframelySoftLimit();
+
     const meta = await tryIframely(url);
     if (meta) {
       setCachedUnfurl(url, meta, 6 * 60 * 60_000);
@@ -595,7 +582,7 @@ async function unfurlBlocked(url: string): Promise<UnfurlMeta | null> {
 
 export async function analyzeUrl(url: string): Promise<Identity> {
   const normalizedUrl = normalizeHashRouting(url);
-  
+
   // ===== Phase 0 =====
   const direct = tryNotionIdentity(normalizedUrl);
   if (direct) return direct;
@@ -604,11 +591,11 @@ export async function analyzeUrl(url: string): Promise<Identity> {
   const parsed = new URL(normalizedUrl);
   const domain = parsed.hostname.replace(/^www\./, "");
   const urlSlug = buildSlugFromPath(parsed.pathname);
+
   const html = await fetchHtml(normalizedUrl);
   const pageTitle = extractTitle(html);
   const titleLower = pageTitle?.toLowerCase() ?? '';
 
-  // 🔧 DEBUG — sempre loga raw
   console.log('🧪 [Phase 1] Raw:', {
     pageTitle: pageTitle?.slice(0, 50),
     ogTitle: extractMetaContent(html, "og:title")?.slice(0, 50),
@@ -620,7 +607,7 @@ export async function analyzeUrl(url: string): Promise<Identity> {
     titleLower.includes('404') ||
     titleLower.includes('page not found') ||
     titleLower.includes('not found');
-  
+
   console.log('DEBUG 404 CHECK:', titleLower);
   console.log('isHard404 =', isHard404);
 
@@ -633,7 +620,7 @@ export async function analyzeUrl(url: string): Promise<Identity> {
   const htmlLower = html.toLowerCase();
   const pageTitleLower = pageTitle?.toLowerCase() ?? null;
   const isBlocked = detectBlocked(htmlLower, pageTitleLower);
-  
+
   console.log('🧪 [Phase 1] Blocked?', isBlocked);
 
   let identity: Identity = {
@@ -648,12 +635,11 @@ export async function analyzeUrl(url: string): Promise<Identity> {
     fallbackLabel: `${domain} · ${urlSlug || "—"}`
   };
 
-  // 🔧 SEMPRE tenta unfurl se blocked OU título suspeito
+  // 🔧 tenta unfurl se blocked OU título suspeito
   if (isBlocked || isSuspiciousTitle(pageTitle)) {
     console.log('🤖 [Phase 1] Tentando unfurlBlocked()...');
     const meta = await unfurlBlocked(normalizedUrl);
 
-    // ✅ VALIDAÇÃO: Só aceita unfurl se o metadata for realmente útil
     if (meta && isUsefulUnfurlMeta(meta)) {
       const newTitle = meta.ogTitle ?? meta.title;
 
@@ -663,7 +649,6 @@ export async function analyzeUrl(url: string): Promise<Identity> {
         isBlockedTitle: isBlockedTitle(newTitle)
       });
 
-      // Só "desbloqueia" se o título NÃO for de challenge
       if (!isBlockedTitle(newTitle)) {
         identity = {
           ...identity,
@@ -671,16 +656,15 @@ export async function analyzeUrl(url: string): Promise<Identity> {
           ogTitle: meta.ogTitle ?? identity.ogTitle,
           ogSite: meta.ogSite ?? identity.ogSite,
           unfurlVia: meta.via,
-          isBlocked: false  // ✅ Unfurl desbloqueou com sucesso
+          isBlocked: false // ✅ só aqui "desbloqueia"
         };
         console.log('✅ [Phase 1] Unfurl SUCESSO (desbloqueado):', identity.pageTitle?.slice(0, 50));
       } else {
-        // Unfurl trouxe título de challenge — mantém isBlocked=true
+        // Teoricamente não deveria cair aqui (isUsefulUnfurlMeta já barra), mas mantém defesa
         identity.unfurlVia = meta.via;
         console.log('⚠️ [Phase 1] Unfurl trouxe título de challenge, mantendo isBlocked=true');
       }
     } else {
-      // Unfurl falhou ou retornou metadata inútil
       identity.unfurlVia = "fallback";
       console.log('❌ [Phase 1] Unfurl falhou ou metadata inútil, usando raw (isBlocked permanece:', isBlocked, ')');
     }

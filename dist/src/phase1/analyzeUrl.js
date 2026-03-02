@@ -1,11 +1,13 @@
-// src/phase1/analyzeUrl.ts — v1.3.0
+// src/phase1/analyzeUrl.ts — v1.3.1
 // ✅ Fixes aplicados:
-// 1. BLOCKED_PATTERNS robusto (scumbumbo, cf-challenge, etc.)
+// 1. BLOCKED_PATTERNS robusto (scumbumbo, cf-challenge, Vercel Security Checkpoint, etc.)
 // 2. detectBlocked() com heurística tamanho + conteúdo
 // 3. tryIframely() sempre se title suspeito (SCUMBUMBO-like)
 // 4. Debug logs [Phase 1] Raw + isBlocked
 // 5. tryLocalOgs() / tryOgWebApi() com try/catch
 // 6. isSuspiciousTitle() para forçar unfurl
+// 7. ✅ Unfurl só "desbloqueia" se meta for realmente útil (anti-challenge)
+// 8. ✅ Correção de precedência em isUsefulUnfurlMeta()
 import 'dotenv/config';
 import ogs from "open-graph-scraper";
 import fs from "node:fs";
@@ -15,7 +17,6 @@ const REQUEST_HEADERS = {
     Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9,pt-BR;q=0.8,pt;q=0.7"
 };
-// ✅ CORRETO — tudo em UMA linha
 // ✅ EXPANDED — Padrões de bloqueio/challenge modernos (incluindo Vercel Security Checkpoint)
 const BLOCKED_PATTERNS = /just a moment|cloudflare|access denied|checking your browser|challenge-platform|cf-browser-verification|cf-chl|js-challenge|scumbumbo|vercel security checkpoint|security checkpoint|attention required|access forbidden|enable javascript|bot detection|human verification|please wait|loading\.\.\.(?!.*\w)/i;
 const providerState = {
@@ -184,14 +185,12 @@ function extractMetaContent(html, key) {
 }
 // 🔧 ROBUSTO — heurística tamanho + padrões modernos
 function detectBlocked(htmlLower, pageTitleLower) {
-    // Padrões regex
-    if (BLOCKED_PATTERNS.test(htmlLower) ||
-        (pageTitleLower && BLOCKED_PATTERNS.test(pageTitleLower))) {
+    if (BLOCKED_PATTERNS.test(htmlLower) || (pageTitleLower && BLOCKED_PATTERNS.test(pageTitleLower))) {
         return true;
     }
-    // 🔧 NOVO: heurística tamanho + conteúdo suspeito
-    if (htmlLower.length < 5000 || // HTML muito curto (bloqueio)
-        (htmlLower.includes('scumbumbo') && pageTitleLower?.match(/^[A-Z]+$/))) { // SCUMBUMBO pattern
+    // heurística adicional
+    if (htmlLower.length < 5000 ||
+        (htmlLower.includes('scumbumbo') && !!pageTitleLower?.match(/^[A-Z]+$/))) {
         return true;
     }
     return false;
@@ -201,7 +200,7 @@ function isUselessText(s) {
         return true;
     return BLOCKED_PATTERNS.test(s);
 }
-// 🔧 NOVO — detecta títulos suspeitos (SCUMBUMBO-like)
+// 🔧 detecta títulos suspeitos (SCUMBUMBO-like)
 function isSuspiciousTitle(title) {
     if (!title)
         return true;
@@ -212,19 +211,15 @@ function isSuspiciousTitle(title) {
 }
 /**
  * Verifica se um título retornado por unfurl ainda é um título de bloqueio/challenge.
- * Usado para validar se o unfurl realmente "desbloqueou" ou apenas trouxe outro título de challenge.
  */
 function isBlockedTitle(title) {
     if (!title)
-        return true; // Sem título = não é útil
+        return true; // sem título = não é útil
     const titleLower = title.toLowerCase().trim();
-    // Vazio ou muito curto (< 3 chars) = suspeito
     if (titleLower.length < 3)
         return true;
-    // Bate BLOCKED_PATTERNS direto
     if (BLOCKED_PATTERNS.test(titleLower))
         return true;
-    // Padrões específicos de checkpoint/challenge não cobertos acima
     const challengeTerms = [
         'checkpoint',
         'verification',
@@ -247,22 +242,16 @@ function isBlockedTitle(title) {
  * Valida se o metadata retornado por unfurl é realmente útil.
  * Retorna false se o título ainda é de bloqueio ou genérico demais.
  */
-/**
- * Valida se o metadata retornado por unfurl é realmente útil.
- * Retorna false se o título ainda é de bloqueio ou genérico demais.
- */
 function isUsefulUnfurlMeta(meta) {
     if (!meta)
         return false;
-    // Pega o melhor título disponível
     const bestTitle = meta.ogTitle || meta.title;
-    // Se o título ainda é de bloqueio, não é útil
     if (isBlockedTitle(bestTitle)) {
         return false;
     }
-    // ✅ CORREÇÃO: boolean explícito
-    const hasTitle = !!(bestTitle?.trim().length ?? 0 >= 3);
-    const hasOgSite = !!(meta.ogSite?.trim().length ?? 0 > 0);
+    // ✅ correção de precedência
+    const hasTitle = ((bestTitle?.trim().length ?? 0) >= 3);
+    const hasOgSite = ((meta.ogSite?.trim().length ?? 0) > 0);
     // Precisa de pelo menos título OU og:site_name
     return hasTitle || hasOgSite;
 }
@@ -397,7 +386,7 @@ async function tryLocalOgs(url) {
         return null;
     }
 }
-// ✅ NOVO — OpenGraph.xyz (entre LocalOgs e Iframely)
+// ✅ OpenGraph.xyz
 async function tryOpenGraphXyz(url) {
     try {
         const ogUrl = `https://www.opengraph.xyz/url/${encodeURIComponent(url)}`;
@@ -406,18 +395,14 @@ async function tryOpenGraphXyz(url) {
             return null;
         const title = extractMetaContent(html, "og:title") ?? extractTitle(html);
         const ogSite = extractMetaContent(html, "og:site_name") ?? null;
-        const meta = normalizeMeta({
-            title,
-            ogTitle: title,
-            ogSite
-        }, "fallback");
+        const meta = normalizeMeta({ title, ogTitle: title, ogSite }, "fallback");
         return isUsefulMeta(meta) ? meta : null;
     }
     catch {
         return null;
     }
 }
-// src/phase1/analyzeUrl.ts — tryIframely (COM API KEY)
+// tryIframely (com API KEY)
 async function tryIframely(url) {
     try {
         const apiKey = String(process.env.IFRAMELY_API_KEY ?? "").trim();
@@ -442,17 +427,14 @@ async function tryIframely(url) {
         return null;
     }
 }
-// ✅ NOVO — Microlink (depois do Iframely)
-// Integração via parâmetros meta.* (conforme docs)
+// ✅ Microlink
 async function tryMicrolink(url) {
     try {
         const base = "https://api.microlink.io/";
         const params = new URLSearchParams();
         params.set("url", url);
-        // meta via parâmetros (docs): pede só o que a gente usa
         params.set("meta.title", "true");
         params.set("meta.publisher", "true");
-        // opcional: endpoint proxy (para plano/API key), se você usar isso
         const endpoint = String(process.env.MICROLINK_ENDPOINT ?? "").trim();
         if (endpoint)
             params.set("endpoint", endpoint);
@@ -466,11 +448,7 @@ async function tryMicrolink(url) {
         const data = json?.data ?? null;
         const title = data?.title ?? null;
         const ogSite = data?.publisher ?? null;
-        const meta = normalizeMeta({
-            title,
-            ogTitle: title,
-            ogSite
-        }, "fallback");
+        const meta = normalizeMeta({ title, ogTitle: title, ogSite }, "fallback");
         return isUsefulMeta(meta) ? meta : null;
     }
     catch {
@@ -481,8 +459,8 @@ async function unfurlBlocked(url) {
     const cached = getCachedUnfurl(url);
     if (cached)
         return cached;
-    // Ordem pedida:
-    // 1) OgWebApi → 2) LocalOgs → 3) OpenGraph.xyz → 4) Iframely (com API key) → 5) Microlink
+    // Ordem:
+    // 1) OgWebApi → 2) LocalOgs → 3) OpenGraph.xyz → 4) Iframely → 5) Microlink
     if (canTry("ogWebApi")) {
         const meta = await tryOgWebApi(url);
         if (meta) {
@@ -508,6 +486,9 @@ async function unfurlBlocked(url) {
         cooldown("openGraphXyz", 2 * 60_000);
     }
     if (canTry("iframely")) {
+        // mantém leitura de uso (se você usar depois)
+        readIframelyUsage();
+        getIframelySoftLimit();
         const meta = await tryIframely(url);
         if (meta) {
             setCachedUnfurl(url, meta, 6 * 60 * 60_000);
@@ -538,7 +519,6 @@ export async function analyzeUrl(url) {
     const html = await fetchHtml(normalizedUrl);
     const pageTitle = extractTitle(html);
     const titleLower = pageTitle?.toLowerCase() ?? '';
-    // 🔧 DEBUG — sempre loga raw
     console.log('🧪 [Phase 1] Raw:', {
         pageTitle: pageTitle?.slice(0, 50),
         ogTitle: extractMetaContent(html, "og:title")?.slice(0, 50),
@@ -570,11 +550,10 @@ export async function analyzeUrl(url) {
         unfurlVia: "none",
         fallbackLabel: `${domain} · ${urlSlug || "—"}`
     };
-    // 🔧 SEMPRE tenta unfurl se blocked OU título suspeito
+    // 🔧 tenta unfurl se blocked OU título suspeito
     if (isBlocked || isSuspiciousTitle(pageTitle)) {
         console.log('🤖 [Phase 1] Tentando unfurlBlocked()...');
         const meta = await unfurlBlocked(normalizedUrl);
-        // ✅ VALIDAÇÃO: Só aceita unfurl se o metadata for realmente útil
         if (meta && isUsefulUnfurlMeta(meta)) {
             const newTitle = meta.ogTitle ?? meta.title;
             console.log('🧪 [Phase 1] Unfurl retornou:', {
@@ -582,7 +561,6 @@ export async function analyzeUrl(url) {
                 via: meta.via,
                 isBlockedTitle: isBlockedTitle(newTitle)
             });
-            // Só "desbloqueia" se o título NÃO for de challenge
             if (!isBlockedTitle(newTitle)) {
                 identity = {
                     ...identity,
@@ -590,18 +568,17 @@ export async function analyzeUrl(url) {
                     ogTitle: meta.ogTitle ?? identity.ogTitle,
                     ogSite: meta.ogSite ?? identity.ogSite,
                     unfurlVia: meta.via,
-                    isBlocked: false // ✅ Unfurl desbloqueou com sucesso
+                    isBlocked: false // ✅ só aqui "desbloqueia"
                 };
                 console.log('✅ [Phase 1] Unfurl SUCESSO (desbloqueado):', identity.pageTitle?.slice(0, 50));
             }
             else {
-                // Unfurl trouxe título de challenge — mantém isBlocked=true
+                // Teoricamente não deveria cair aqui (isUsefulUnfurlMeta já barra), mas mantém defesa
                 identity.unfurlVia = meta.via;
                 console.log('⚠️ [Phase 1] Unfurl trouxe título de challenge, mantendo isBlocked=true');
             }
         }
         else {
-            // Unfurl falhou ou retornou metadata inútil
             identity.unfurlVia = "fallback";
             console.log('❌ [Phase 1] Unfurl falhou ou metadata inútil, usando raw (isBlocked permanece:', isBlocked, ')');
         }

@@ -1,4 +1,4 @@
-// src/phase2/searchNotionCache.ts (v3.2-beta FIXED - +PHASE 2.5 + TOP5 + CREATOR PESO PEQUENO + STATUS NOTFOUND)
+// src/phase2/searchNotionCache.ts (v3.3 - blocked structural mode + title weight zero)
 //
 // Decisões aplicadas:
 // - Saídas do app: FOUND | AMBIGUOUS | NOTFOUND | REJECTED_404 (este arquivo cobre só Phase 2)
@@ -7,45 +7,55 @@
 // - AMBIGUOUS também retorna TOP 5 (Phase 3 trabalha com 2..5)
 // - Phase 2.5: planeja se chama Phase 3 (Notion live) para confirmar/desambiguar
 //
-// Opção B aplicada:
-// ✅ Mantém _score/_reasons no retorno (NotionPage já suporta esses campos opcionais)
-//   Isso ajuda debug e também ajuda cache/telemetria sem casts perigosos.
-const THRESHOLD_FOUND = 0.48; // match alto o suficiente pra FOUND direto
-const THRESHOLD_CANDIDATE = 0.28; // mínimo pra entrar como candidato
-const GAP_AMBIGUOUS = 0.15; // gap baixo => ambíguo/duplicata provável
-// Pesos (somam ~0.85 + bônus domínio)
+// ✅ Novo:
+// - Modo BLOCKED_STRUCTURAL quando identity.isBlocked = true
+// - Título recebe peso ZERO em modo bloqueado (evita "Vercel Security Checkpoint" contaminar score)
+// - Busca pode seguir com slug + domínio mesmo sem título
+const THRESHOLD_FOUND = 0.48;
+const THRESHOLD_CANDIDATE = 0.28;
+const GAP_AMBIGUOUS = 0.15;
+// Pesos base (somam ~0.85 + bônus domínio)
 const W_TITLE = 0.60;
-const W_CREATOR = 0.05; // PESO PEQUENO (snapshot quase sempre null)
+const W_CREATOR = 0.05;
 const W_SLUG = 0.20;
 const DOMAIN_BONUS = 0.05;
 export async function searchNotionCache(identity, notionPages) {
     const candidates = [];
-    // ========== EXTRAÇÃO DE IDENTIDADE ==========
-    const searchTitle = identity.pageTitle ||
-        identity.ogTitle ||
-        identity.urlSlug ||
-        "";
-    // IMPORTANTE: creator real (quando existir) é identity.creator, não ogSite
+    const blockedStructuralMode = Boolean(identity.isBlocked);
+    // Em modo bloqueado, NÃO confiamos em título/ogTitle.
+    const rawTitle = blockedStructuralMode
+        ? ""
+        : (identity.pageTitle || identity.ogTitle || "");
+    // Label só para logs/reason (não é necessariamente o texto usado no score de título)
+    const searchLabel = blockedStructuralMode
+        ? `[${identity.domain}] ${identity.urlSlug}`.trim()
+        : (rawTitle || identity.urlSlug || "");
     const searchCreator = identity.creator || "";
     const searchDomain = identity.domain;
-    const searchSlug = identity.urlSlug;
-    // Guard: sem título, impossível buscar
-    if (!searchTitle) {
+    const searchSlug = identity.urlSlug || "";
+    // Guard: sem título E sem slug = impossível buscar
+    if (!rawTitle && !searchSlug) {
         return {
-            decision: { result: "NOTFOUND", phaseResolved: "PHASE_2", reason: "..." },
+            decision: {
+                result: "NOTFOUND",
+                phaseResolved: "PHASE_2",
+                reason: "❌ No usable identity signals (title/slug) for Phase 2 search",
+            },
             candidates: [],
         };
     }
     console.log("🔍 [Phase 2] Fuzzy search for:", {
-        title: searchTitle,
+        mode: blockedStructuralMode ? "BLOCKED_STRUCTURAL" : "NORMAL",
+        title: rawTitle || "(ignored/empty)",
         creator: searchCreator || "(none)",
         domain: searchDomain,
-        slug: searchSlug,
+        slug: searchSlug || "(none)",
         totalPages: Object.keys(notionPages).length,
     });
-    // ========== TOKENIZAÇÃO PARA FALLBACK ==========
-    const searchTokens = tokenize(searchTitle);
-    // ========== SCORING FUZZY ==========
+    const effectiveTitleWeight = blockedStructuralMode ? 0 : W_TITLE;
+    const effectiveSlugWeight = blockedStructuralMode ? (W_SLUG + 0.15) : W_SLUG; // slug manda mais quando bloqueado
+    const searchTitleNorm = normalizeTitle(rawTitle);
+    const searchTokens = tokenize(rawTitle || searchSlug || "");
     for (const [, page] of Object.entries(notionPages)) {
         let score = 0;
         const reasons = [];
@@ -53,51 +63,53 @@ export async function searchNotionCache(identity, notionPages) {
         const notionCreator = page.creator || "";
         if (!notionTitle)
             continue;
-        // --- 1) TÍTULO (peso 60%) via Levenshtein + fallback token overlap ---
-        const titleSimilarity = calculateSimilarity(normalizeTitle(searchTitle), normalizeTitle(notionTitle));
-        // Match quase exato de título = retorno imediato
-        if (titleSimilarity >= 0.98) {
-            console.log("✅ [Phase 2] Near-exact title match:", notionTitle);
-            const immediateDecision = {
-                result: "FOUND",
-                phaseResolved: "PHASE_2",
-                reason: `🎯 Exact name match: "${searchTitle}" ≈ "${notionTitle}"`,
-                notionId: page.notion_id,
-                notionUrl: page.url, // se quiser consistência, troque pra getNotionPageUrl no main
-                displayName: notionTitle,
-                phase2Candidates: 1,
-            };
-            // Retorna o próprio page, sem score extra (não precisa)
-            return {
-                decision: immediateDecision,
-                candidates: [page],
-            };
-        }
-        // FALLBACK: token overlap quando Levenshtein é baixo
-        if (titleSimilarity < 0.60) {
-            const notionTokens = tokenize(notionTitle);
-            const overlap = intersectionSize(searchTokens, notionTokens);
-            const union = unionSize(searchTokens, notionTokens);
-            if (union > 0) {
-                const tokenOverlapScore = overlap / union; // Jaccard
-                if (tokenOverlapScore >= 0.50) {
-                    score += tokenOverlapScore * W_TITLE;
-                    reasons.push(`tokens:${(tokenOverlapScore * 100).toFixed(0)}% (${overlap}/${union})`);
+        const notionTitleNorm = normalizeTitle(notionTitle);
+        // --- 1) TÍTULO (somente modo normal) ---
+        if (effectiveTitleWeight > 0 && searchTitleNorm) {
+            const titleSimilarity = calculateSimilarity(searchTitleNorm, notionTitleNorm);
+            // Near-exact title match (somente se NÃO bloqueado)
+            if (titleSimilarity >= 0.98) {
+                console.log("✅ [Phase 2] Near-exact title match:", notionTitle);
+                const immediateDecision = {
+                    result: "FOUND",
+                    phaseResolved: "PHASE_2",
+                    reason: `🎯 Exact name match: "${rawTitle}" ≈ "${notionTitle}"`,
+                    notionId: page.notion_id,
+                    notionUrl: page.url,
+                    displayName: notionTitle,
+                    phase2Candidates: 1,
+                };
+                return {
+                    decision: immediateDecision,
+                    candidates: [page],
+                };
+            }
+            // fallback token overlap quando Levenshtein é baixo
+            if (titleSimilarity < 0.60) {
+                const notionTokens = tokenize(notionTitle);
+                const overlap = intersectionSize(searchTokens, notionTokens);
+                const union = unionSize(searchTokens, notionTokens);
+                if (union > 0) {
+                    const tokenOverlapScore = overlap / union;
+                    if (tokenOverlapScore >= 0.50) {
+                        score += tokenOverlapScore * effectiveTitleWeight;
+                        reasons.push(`tokens:${(tokenOverlapScore * 100).toFixed(0)}% (${overlap}/${union})`);
+                    }
+                    else {
+                        score += titleSimilarity * effectiveTitleWeight;
+                        if (titleSimilarity > 0.40)
+                            reasons.push(`title:${(titleSimilarity * 100).toFixed(0)}%`);
+                    }
                 }
                 else {
-                    score += titleSimilarity * W_TITLE;
-                    if (titleSimilarity > 0.40)
-                        reasons.push(`title:${(titleSimilarity * 100).toFixed(0)}%`);
+                    score += titleSimilarity * effectiveTitleWeight;
                 }
             }
             else {
-                score += titleSimilarity * W_TITLE;
+                score += titleSimilarity * effectiveTitleWeight;
+                if (titleSimilarity > 0.40)
+                    reasons.push(`title:${(titleSimilarity * 100).toFixed(0)}%`);
             }
-        }
-        else {
-            score += titleSimilarity * W_TITLE;
-            if (titleSimilarity > 0.40)
-                reasons.push(`title:${(titleSimilarity * 100).toFixed(0)}%`);
         }
         // --- 2) CREATOR (peso pequeno 5%) ---
         if (searchCreator && notionCreator) {
@@ -107,7 +119,7 @@ export async function searchNotionCache(identity, notionPages) {
                 reasons.push(`creator:${(creatorSimilarity * 100).toFixed(0)}%`);
             }
         }
-        // --- 3) SLUG (peso 20% via token overlap) ---
+        // --- 3) SLUG (peso estrutural; sobe em blocked mode) ---
         if (searchSlug && notionTitle) {
             const slugTokens = tokenize(searchSlug);
             const notionTokens = tokenize(notionTitle);
@@ -115,8 +127,8 @@ export async function searchNotionCache(identity, notionPages) {
             const union = unionSize(slugTokens, notionTokens);
             if (union > 0) {
                 const slugTokenScore = overlap / union;
-                if (slugTokenScore > 0.50) {
-                    score += slugTokenScore * W_SLUG;
+                if (slugTokenScore > 0.20) { // em blocked mode, até overlap moderado já ajuda
+                    score += slugTokenScore * effectiveSlugWeight;
                     reasons.push(`slugTokens:${(slugTokenScore * 100).toFixed(0)}%`);
                 }
             }
@@ -129,7 +141,6 @@ export async function searchNotionCache(identity, notionPages) {
                 reasons.push("domain✓");
             }
         }
-        // Entra na lista de candidatos
         if (score > THRESHOLD_CANDIDATE) {
             candidates.push({
                 ...page,
@@ -138,19 +149,16 @@ export async function searchNotionCache(identity, notionPages) {
             });
         }
     }
-    // ========== ORDENAÇÃO (FIX CRÍTICO) ==========
+    // Ordenação
     candidates.sort((a, b) => b._score - a._score);
     const best = candidates[0];
     const bestScore = best?._score ?? 0;
     const secondBestScore = candidates[1]?._score ?? 0;
     const gap = bestScore - secondBestScore;
     console.log(`📊 [Phase 2] Found ${candidates.length} candidates, best score: ${(bestScore * 100).toFixed(0)}%`);
-    // TOP 5 (mantém _score/_reasons pra debug)
     const top5 = candidates.slice(0, 5);
-    // ========== DECISÃO ==========
-    // 1) FOUND direto: score alto e candidato claro
+    // 1) FOUND direto
     if (candidates.length > 0 && bestScore >= THRESHOLD_FOUND) {
-        // Ambíguo se segundo está perto demais
         if (candidates.length > 1 && gap < GAP_AMBIGUOUS) {
             console.log("⚠️ [Phase 2] Ambiguous: multiple candidates with similar scores (possible duplicates)");
             const decision = {
@@ -168,7 +176,7 @@ export async function searchNotionCache(identity, notionPages) {
         const decision = {
             result: "FOUND",
             phaseResolved: "PHASE_2",
-            reason: `🎯 Fuzzy match (score:${(bestScore * 100).toFixed(0)}%, gap:${(gap * 100).toFixed(0)}%) → ${best?._reasons?.join(", ") ?? "no reasons"}`,
+            reason: `🎯 Fuzzy match (score:${(bestScore * 100).toFixed(0)}%, gap:${(gap * 100).toFixed(0)}%) [${blockedStructuralMode ? "BLOCKED_STRUCTURAL" : "NORMAL"}] → ${best?._reasons?.join(", ") ?? "no reasons"}`,
             notionId: best.notion_id,
             notionUrl: best.url,
             displayName: best.title || best.filename || "Unknown",
@@ -179,12 +187,12 @@ export async function searchNotionCache(identity, notionPages) {
             candidates: top5,
         };
     }
-    // 2) NOTFOUND: sem match confiante (mas manda TOP 5 pro Phase 3)
+    // 2) NOTFOUND (mas manda TOP 5 pro Phase 3)
     console.log("⚠️ [Phase 2] No confident match, candidates:", candidates.length);
     const decision = {
         result: "NOTFOUND",
         phaseResolved: "PHASE_2",
-        reason: `❌ No confident match for "${searchTitle}". Best: ${bestScore ? (bestScore * 100).toFixed(0) + "%" : "N/A"} (threshold: ${(THRESHOLD_FOUND * 100).toFixed(0)}%)`,
+        reason: `❌ No confident match for "${searchLabel}". Best: ${bestScore ? (bestScore * 100).toFixed(0) + "%" : "N/A"} (threshold: ${(THRESHOLD_FOUND * 100).toFixed(0)}%) [${blockedStructuralMode ? "BLOCKED_STRUCTURAL" : "NORMAL"}]`,
         phase2Candidates: candidates.length,
     };
     return {
@@ -192,9 +200,6 @@ export async function searchNotionCache(identity, notionPages) {
         candidates: top5,
     };
 }
-// -------------------------
-// PHASE 2.5 (planejamento pro Phase 3)
-// -------------------------
 // -------------------------
 // FUNÇÕES AUXILIARES
 // -------------------------

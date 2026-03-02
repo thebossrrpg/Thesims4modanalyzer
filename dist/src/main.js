@@ -56,8 +56,7 @@ function printHumanSummary(out) {
             console.log(`🗂️  Notion: ${out.found.pageUrl}`);
     }
     if (out.status === "AMBIGUOUS" && out.ambiguous) {
-        const candidateNames = out.debug?.phase2?.candidatesTop5?.map(c => c.title || c.pageId?.slice(0, 8) || '?') || out.ambiguous.pageIds.slice(0, 3).map(id => id.slice(0, 8));
-        console.log(`⚠️ Candidatos: ${candidateNames.join(", ")}`);
+        console.log(`⚠️  Candidatos: ${out.ambiguous.pageIds.join(", ")}`);
     }
     if (out.status === "REJECTED_404") {
         const r = out.debug.validation.rejected404Reason ?? "(sem motivo)";
@@ -175,7 +174,7 @@ async function enrichCandidatesWithNotionLive(caches, candidates) {
 (async () => {
     // ── VALIDAÇÃO / REJECTED_404 ─────────────────────────────
     const debug = createBaseDebug(inputUrl);
-    if (!inputUrl || inputUrl.trim().length < 10) {
+    if (!inputUrl || !/^https?:\/\//i.test(inputUrl)) {
         setRejected404(debug, "url_not_http");
         const out = {
             startedAt,
@@ -511,26 +510,20 @@ async function enrichCandidatesWithNotionLive(caches, candidates) {
         console.log("\n🤖 [Phase 3] Gates passed. Enriching candidates via Notion live (if available)...");
         const notionLive = await enrichCandidatesWithNotionLive(caches, phase3Candidates);
         // Agora roda IA em cima dos candidatos enriquecidos
-        // Agora roda IA em cima dos candidatos enriquecidos
         console.log("🤖 [Phase 3] Running AI disambiguation...");
         let aiResult = null;
         try {
-            const aiIdentity = {
-                ...identity,
-                pageTitle: identity.urlSlug || identity.pageTitle,
-                ogTitle: identity.ogTitle || identity.pageTitle || identity.urlSlug || "",
-            };
-            aiResult = await aiDisambiguate(aiIdentity, notionLive.enriched);
+            aiResult = await aiDisambiguate(identity, notionLive.enriched);
         }
         catch (e) {
-            // fallback Phase 2 (igual seu código)
+            // Sem HF_TOKEN / erro de rede / etc => fallback Phase 2.
             const d = phase2Result.decision;
             const errMsg = String(e?.message ?? e ?? "erro_na_ia");
             debug.phase3 = buildPhase3Debug({
                 mode: notionLive.mode,
                 finalCandidates: rescue.plan.mode === "DISAMBIGUATE" ? notionLive.enriched.length : 0,
                 finalCandidatePageIds: rescue.plan.mode === "DISAMBIGUATE"
-                    ? notionLive.enriched.map((c) => String(c.notionid || c.notion_id))
+                    ? notionLive.enriched.map((c) => String(c.notion_id))
                     : undefined,
             });
             debug.phase3.notionApi = { fetchedPages: notionLive.fetchedPages };
@@ -542,7 +535,7 @@ async function enrichCandidatesWithNotionLive(caches, candidates) {
                 reason: `${d.reason ?? ""} | Phase 3 indisponível: ${errMsg}`,
                 debug,
                 ...(d.result === "AMBIGUOUS"
-                    ? { ambiguous: { pageIds: phase2Candidates.map((c) => String(c.notionid || c.notion_id)) } }
+                    ? { ambiguous: { pageIds: phase2Candidates.map((c) => String(c.notion_id)) } }
                     : {}),
             };
             emit(out);
@@ -627,7 +620,7 @@ async function enrichCandidatesWithNotionLive(caches, candidates) {
             inputUrl,
             status: "NOTFOUND",
             phaseResolved: "PHASE_3",
-            reason: `AI não confirmou candidato fraco: ${aiResult.reason} (${(aiResult.confidence * 100).toFixed(0)}%)`,
+            reason: `IA não confirmou candidato fraco: ${aiResult.reason} (${(aiResult.confidence * 100).toFixed(0)}%)`,
             debug,
         };
         persistDecision(caches, {

@@ -1,4 +1,4 @@
-// src/phase3/aiDisambiguate.ts (v4.1 - Embeddings Xenova all-MiniLM-L6-v2 ✅ INTEGRADO)
+// src/phase3/aiDisambiguate.ts (v4.2 - Embeddings Xenova all-MiniLM-L6-v2 + Gate anti-challenge)
 
 import type { Identity } from '../domain/identity.js';
 import type { NotionPage } from '../domain/snapshot.js';
@@ -12,29 +12,68 @@ export interface AIDisambiguationResult {
   rawResponse?: string;
 }
 
+const CHALLENGE_TITLE_PATTERNS: RegExp[] = [
+  /just a moment/i,
+  /security checkpoint/i,
+  /vercel security checkpoint/i,
+  /attention required/i,
+  /checking (your )?browser/i,
+  /verify (you are )?human/i,
+  /human verification/i,
+  /bot verification/i,
+  /access denied/i,
+  /request blocked/i,
+  /ddos protection/i,
+  /cloudflare/i,
+  /challenge/i,
+];
+
+function isChallengeTitle(title: string | null | undefined): boolean {
+  const t = String(title ?? '').trim();
+  if (!t) return false;
+  return CHALLENGE_TITLE_PATTERNS.some((rx) => rx.test(t));
+}
+
+function getBestIdentityTitle(identity: Identity): string {
+  return String(identity.pageTitle || identity.ogTitle || '').trim();
+}
+
 /**
- * Verifica se a identidade é válida o suficiente pra usar IA
- * PATCH: Gate isBlocked REMOVIDO - se título é bom, não importa se bloqueado
+ * Verifica se a identidade é válida o suficiente pra usar IA (embeddings)
+ * - isBlocked sozinho NÃO reprova automaticamente
+ * - título de challenge/checkpoint reprova
  */
 export function isIdentityValidForAI(identity: Identity): boolean {
-  const title = identity.pageTitle || identity.ogTitle || '';
+  const title = getBestIdentityTitle(identity);
 
-  // Guard 1: Título vazio ou muito curto
+  // Guard 0: challenge/checkpoint
+  if (isChallengeTitle(title)) {
+    console.log(
+      `⚠️ [Phase 3 Gate] Identity rejected: challenge/checkpoint title detected ("${title}")`
+    );
+    return false;
+  }
+
+  // Guard 1: título vazio ou muito curto
   if (title.length < 5) {
     console.log('⚠️ [Phase 3 Gate] Identity rejected: title too short');
     return false;
   }
 
-  // Guard 2: Só números/pontuação (lixo)
+  // Guard 2: só números/pontuação
   const cleanTitle = title.replace(/[^\w\s]/g, '').trim();
+  if (!cleanTitle) {
+    console.log('⚠️ [Phase 3 Gate] Identity rejected: title became empty after cleanup');
+    return false;
+  }
   if (/^\d+$/.test(cleanTitle)) {
     console.log('⚠️ [Phase 3 Gate] Identity rejected: title is only numbers');
     return false;
   }
 
-  // Guard 3: Muito poucos caracteres alfabéticos (< 30%)
+  // Guard 3: poucos caracteres alfabéticos
   const alphaCount = (title.match(/[a-zA-Z]/g) || []).length;
-  const alphaRatio = alphaCount / title.length;
+  const alphaRatio = title.length > 0 ? alphaCount / title.length : 0;
 
   if (alphaRatio < 0.3) {
     console.log(
@@ -43,8 +82,7 @@ export function isIdentityValidForAI(identity: Identity): boolean {
     return false;
   }
 
-  // Gate 4 REMOVIDO: isBlocked não importa se o título é válido!
-
+  // isBlocked continua NÃO sendo bloqueio automático
   console.log('✅ [Phase 3 Gate] Identity is valid for AI');
   return true;
 }
@@ -53,8 +91,6 @@ export async function aiDisambiguate(
   identity: Identity,
   candidates: NotionPage[]
 ): Promise<AIDisambiguationResult> {
-  
-  // ✅ NOVO: Gate identity antes de embedding
   if (!isIdentityValidForAI(identity)) {
     return { matchedIndex: -1, confidence: 0, reason: 'Identity too weak for AI' };
   }
@@ -64,7 +100,6 @@ export async function aiDisambiguate(
   }
 
   if (candidates.length === 1) {
-    // ainda respeitamos threshold mínimo
     return await disambiguateSingle(identity, candidates[0]);
   }
 
@@ -84,7 +119,6 @@ async function disambiguateSingle(
   ]);
 
   const score = cosineSimilarity(idEmb, candEmb);
-
   const T_CONFIRM = 0.7; // calibrável
 
   if (score >= T_CONFIRM) {
@@ -112,7 +146,7 @@ async function disambiguateMultiple(
   const idEmb = await getOrCreateEmbedding(idText);
 
   const scores = await Promise.all(
-    candidates.slice(0, 5).map(async (c, idx) => {  // ✅ OTIMIZAÇÃO: TOP 5 só
+    candidates.slice(0, 5).map(async (c, idx) => {
       const text = buildCandidateText(c);
       const emb = await getOrCreateEmbedding(text);
       return { idx, text, score: cosineSimilarity(idEmb, emb) };

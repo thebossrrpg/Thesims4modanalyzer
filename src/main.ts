@@ -1,4 +1,4 @@
-// src/main.ts — v1.3.3 (Phase 3 wired end-to-end)
+// src/main.ts — v1.2.0 (Phase 3 wired end-to-end)
 //
 // Phase 0/0.5: determinístico no snapshot
 // Phase 1: analyzeUrl -> Identity (hard 404 => REJECTED_404)
@@ -89,11 +89,8 @@ function printHumanSummary(out: AnalyzerJsonOutput): void {
   }
 
   if (out.status === "AMBIGUOUS" && out.ambiguous) {
-  const candidateNames = out.debug?.phase2?.candidatesTop5?.map(c => 
-  c.title || c.pageId?.slice(0,8) || '?'
-) || out.ambiguous.pageIds.slice(0,3).map(id => id.slice(0,8));
-    console.log(`⚠️ Candidatos: ${candidateNames.join(", ")}`);
-}
+    console.log(`⚠️  Candidatos: ${out.ambiguous.pageIds.join(", ")}`);
+  }
 
   if (out.status === "REJECTED_404") {
     const r = out.debug.validation.rejected404Reason ?? "(sem motivo)";
@@ -242,7 +239,7 @@ async function enrichCandidatesWithNotionLive(
 
   const debug: DebugExpander = createBaseDebug(inputUrl);
 
-  if (!inputUrl || inputUrl.trim().length < 10) {
+  if (!inputUrl || !/^https?:\/\//i.test(inputUrl)) {
     setRejected404(debug, "url_not_http");
 
     const out: AnalyzerJsonOutput = {
@@ -667,47 +664,44 @@ async function enrichCandidatesWithNotionLive(
     const notionLive = await enrichCandidatesWithNotionLive(caches, phase3Candidates);
 
     // Agora roda IA em cima dos candidatos enriquecidos
-    // Agora roda IA em cima dos candidatos enriquecidos
-console.log("🤖 [Phase 3] Running AI disambiguation...");
+    console.log("🤖 [Phase 3] Running AI disambiguation...");
 
-let aiResult: { matchedIndex: number; confidence: number; reason: string } | null = null;
+    let aiResult:
+      | { matchedIndex: number; confidence: number; reason: string }
+      | null = null;
 
-try {
-  const aiIdentity = {
-    ...identity,
-    pageTitle: identity.urlSlug || identity.pageTitle,
-    ogTitle: identity.ogTitle || identity.pageTitle || identity.urlSlug || "",
-  };
-  aiResult = await aiDisambiguate(aiIdentity, notionLive.enriched);
-} catch (e: any) {
-  // fallback Phase 2 (igual seu código)
-  const d = phase2Result.decision;
-  const errMsg = String(e?.message ?? e ?? "erro_na_ia");
+    try {
+      aiResult = await aiDisambiguate(identity, notionLive.enriched);
+    } catch (e: any) {
+      // Sem HF_TOKEN / erro de rede / etc => fallback Phase 2.
+      const d = phase2Result.decision;
+      const errMsg = String(e?.message ?? e ?? "erro_na_ia");
 
-  debug.phase3 = buildPhase3Debug({
-    mode: notionLive.mode,
-    finalCandidates: rescue.plan.mode === "DISAMBIGUATE" ? notionLive.enriched.length : 0,
-    finalCandidatePageIds: rescue.plan.mode === "DISAMBIGUATE"
-      ? notionLive.enriched.map((c: any) => String(c.notionid || c.notion_id))
-      : undefined,
-  });
-  debug.phase3!.notionApi = { fetchedPages: notionLive.fetchedPages };
+      debug.phase3 = buildPhase3Debug({
+        mode: notionLive.mode,
+        finalCandidates: rescue.plan.mode === "DISAMBIGUATE" ? notionLive.enriched.length : 0,
+        finalCandidatePageIds:
+          rescue.plan.mode === "DISAMBIGUATE"
+            ? notionLive.enriched.map((c: any) => String(c.notion_id))
+            : undefined,
+      });
+      debug.phase3.notionApi = { fetchedPages: notionLive.fetchedPages };
 
-  const out: AnalyzerJsonOutput = {
-    startedAt,
-    inputUrl,
-    status: d.result as AnalyzerResultStatus,
-    phaseResolved: d.phaseResolved as PhaseResolved,
-    reason: `${d.reason ?? ""} | Phase 3 indisponível: ${errMsg}`,
-    debug,
-    ...(d.result === "AMBIGUOUS"
-      ? { ambiguous: { pageIds: phase2Candidates.map((c: any) => String(c.notionid || c.notion_id)) } }
-      : {}),
-  };
+      const out: AnalyzerJsonOutput = {
+        startedAt,
+        inputUrl,
+        status: d.result as AnalyzerResultStatus,
+        phaseResolved: d.phaseResolved as PhaseResolved,
+        reason: `${d.reason ?? ""} | Phase 3 indisponível: ${errMsg}`,
+        debug,
+        ...(d.result === "AMBIGUOUS"
+          ? { ambiguous: { pageIds: phase2Candidates.map((c: any) => String(c.notion_id)) } }
+          : {}),
+      };
 
-  emit(out);
-  process.exit(0);
-}
+      emit(out);
+      process.exit(0);
+    }
 
     const aiMatched = aiResult.matchedIndex >= 0 && aiResult.confidence >= AI_THRESHOLD;
 
@@ -799,7 +793,7 @@ try {
       inputUrl,
       status: "NOTFOUND",
       phaseResolved: "PHASE_3",
-      reason: `AI não confirmou candidato fraco: ${aiResult.reason} (${(aiResult.confidence * 100).toFixed(
+      reason: `IA não confirmou candidato fraco: ${aiResult.reason} (${(aiResult.confidence * 100).toFixed(
         0
       )}%)`,
       debug,

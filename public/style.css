@@ -1,0 +1,217 @@
+:root {
+  /* cores novas aplicadas na sua estrutura */
+  --card-bg: rgba(248, 248, 248, 0.9);
+  --text: #23242a;
+  --muted: #6f7280;
+  --btn-grad: linear-gradient(90deg, #6282ff 0%, #7646b8 100%);
+  --bg-grad: linear-gradient(120deg, #6d8fff 0%, #7f5eb8 100%);
+  --input-border: #d4d4d9;
+  --input-focus: #6f7ef2;
+  --pre-bg: #fff;
+  --pre-border: #e1e3eb;
+
+  /* mapeamento para as variáveis antigas da sua estrutura */
+  --bg: #0f1220; /* não será mais usada no body, só se algo seu depender */
+  --card: var(--card-bg);
+  --border: var(--input-border);
+  --accent: #6282ff;
+  --good: #20c997;
+  --warn: #f7b955;
+  --bad: #ff6b6b;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg-grad);
+  color: var(--text);
+  font: 16px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+
+.container {
+  width: min(980px, 92vw);
+  margin: 2rem auto 4rem;
+}
+
+.hero {
+  margin-bottom: 1rem;
+}
+
+.hero h1 {
+  margin: 0 0 .25rem;
+  font-size: 1.8rem;
+}
+
+.hero p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 1rem;
+  margin-top: 1rem;
+  box-shadow: 0 20px 40px rgba(16, 17, 26, 0.25);
+}
+
+.card.error {
+  border-color: color-mix(in srgb, var(--bad) 40%, var(--border));
+}
+
+.form label {
+  display: block;
+  margin-bottom: .5rem;
+  color: var(--muted);
+  font-size: .95rem;
+}
+
+.row {
+  display: flex;
+  gap: .75rem;
+  align-items: center;
+}
+
+input[type="url"] {
+  flex: 1;
+  background: #fff;
+  color: var(--text);
+  border: 1px solid var(--input-border);
+  border-radius: 10px;
+  padding: .8rem .9rem;
+  outline: none;
+}
+
+input[type="url"]:focus {
+  border-color: var(--input-focus);
+  box-shadow: 0 0 0 3px rgba(100, 121, 255, 0.15);
+}
+
+button {
+  border: 1px solid transparent;
+  background: var(--btn-grad);
+  color: #fff;
+  border-radius: 10px;
+  padding: .8rem 1rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: filter 120ms ease, transform 80ms ease, opacity 150ms ease;
+}
+
+button:hover:not(:disabled) {
+  filter: brightness(1.02);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+button:disabled {
+  opacity: .7;
+  cursor: not-allowed;
+}
+
+button.ghost {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.status-line {
+  margin-top: .9rem;
+  padding: .7rem .8rem;
+  border-radius: 10px;
+  background: var(--card-bg);
+  border: 1px solid var(--pre-border);
+  color: var(--muted);
+}
+
+.status-line.loading {
+  color: #1f2937;
+  border-color: var(--input-focus);
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: .8rem;
+}
+
+.card-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.result-status {
+  display: inline-flex;
+  align-items: center;
+  gap: .5rem;
+  font-weight: 700;
+  margin-bottom: .8rem;
+}
+
+.badge {
+  border-radius: 999px;
+  padding: .25rem .6rem;
+  border: 1px solid var(--border);
+  font-size: .85rem;
+}
+
+.badge.found  { border-color: color-mix(in srgb, var(--good) 55%, var(--border));  color: var(--good); }
+.badge.ambiguous { border-color: color-mix(in srgb, var(--warn) 55%, var(--border));  color: var(--warn); }
+.badge.notfound  { border-color: color-mix(in srgb, var(--bad) 55%, var(--border));   color: var(--bad); }
+.badge.rejected  { border-color: color-mix(in srgb, var(--bad) 55%, var(--border));   color: var(--bad); }
+
+.meta-block {
+  display: grid;
+  gap: .5rem;
+}
+
+.meta-line {
+  color: var(--muted);
+}
+
+.meta-line strong {
+  color: var(--text);
+}
+
+a {
+  color: #445fd9;
+}
+
+ul.candidates {
+  margin: .4rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.debug {
+  margin-top: 1rem;
+  border-top: 1px solid var(--pre-border);
+  padding-top: .75rem;
+}
+
+.debug summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.debug pre {
+  margin-top: .75rem;
+  background: var(--pre-bg);
+  border: 1px solid var(--pre-border);
+  border-radius: 10px;
+  padding: .8rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #2f3342;
+  font-size: .9rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.hidden {
+  display: none !important;
+}

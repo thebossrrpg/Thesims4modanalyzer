@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TS4 Mod Analyzer — Web UI (MVP)</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <main class="container">
+    <header class="hero">
+      <h1>🧠 TS4 Mod Analyzer</h1>
+      <p>Interface web (MVP) para o CLI congelado</p>
+    </header>
+
+    <section class="card">
+      <form id="analyze-form" class="form">
+        <label for="url-input">URL do mod</label>
+        <div class="row">
+          <input
+            id="url-input"
+            name="url"
+            type="url"
+            placeholder="https://www.curseforge.com/sims4/mods/..."
+            required
+          />
+          <button id="submit-btn" type="submit">Analisar</button>
+        </div>
+      </form>
+
+      <div id="status-line" class="status-line hidden"></div>
+    </section>
+
+    <section id="result-card" class="card hidden">
+      <div class="card-header">
+        <h2>Resultado</h2>
+        <button id="toggle-debug-btn" type="button" class="ghost hidden">
+          Mostrar debug
+        </button>
+      </div>
+
+      <div id="result-content"></div>
+
+      <details id="debug-panel" class="debug hidden">
+        <summary>Debug</summary>
+        <pre id="debug-pre"></pre>
+      </details>
+    </section>
+
+    <section id="error-card" class="card error hidden">
+      <h2>Erro</h2>
+      <p id="error-message"></p>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
